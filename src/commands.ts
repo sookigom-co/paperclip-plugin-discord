@@ -13,6 +13,8 @@ import {
   voiceTargetStateKey,
   type ThreadAutoArchiveMinutes,
 } from "./task-threads.js";
+import { findTaskByIdentifier } from "./task-lookup.js";
+import type { TaskChannelMapping } from "./task-channels.js";
 import { withRetry, throwOnRetryableStatus } from "./retry.js";
 import { paperclipFetch } from "./paperclip-fetch.js";
 import { handleHandoffButton, handleDiscussionButton, handleAcpCommand } from "./session-registry.js";
@@ -68,6 +70,8 @@ export interface CommandContext {
     autoCreate: boolean;
     autoArchiveMinutes: ThreadAutoArchiveMinutes;
   };
+  /** `taskChannels` as the runtime resolved it, for `/clip status` to show. */
+  taskChannels?: TaskChannelMapping[];
 }
 
 function getOption(
@@ -454,7 +458,7 @@ async function handleSlashCommand(
 
   switch (subName) {
     case "status":
-      return handleStatus(ctx, companyId);
+      return handleStatus(ctx, companyId, cmdCtx);
     case "approve":
       return handleApprove(
         ctx,
@@ -557,7 +561,19 @@ async function handleAutocomplete(
   return { type: 8, data: { choices: [] } };
 }
 
-async function handleStatus(ctx: PluginContext, companyId: string): Promise<unknown> {
+/** One `taskChannels` entry as `/clip status` shows it, resolved or not. */
+function formatTaskChannelMapping(mapping: TaskChannelMapping): string {
+  const label = mapping.issueIdentifier ?? mapping.configKey;
+  return mapping.issueId
+    ? `- **${label}** → <#${mapping.channelId}>`
+    : `- \`${mapping.configKey}\` → <#${mapping.channelId}> — task not found, entry ignored`;
+}
+
+async function handleStatus(
+  ctx: PluginContext,
+  companyId: string,
+  cmdCtx?: CommandContext,
+): Promise<unknown> {
   try {
     const [allAgents, activeIssues, doneIssues] = await Promise.all([
       ctx.agents.list({ companyId }),
@@ -589,15 +605,24 @@ async function handleStatus(ctx: PluginContext, companyId: string): Promise<unkn
       ? doneIssues.map((i: { identifier: string | null; id: string; title?: string }) => `- **${i.identifier ?? i.id}** ${i.title ?? ""}`).join("\n")
       : "No recent completions";
 
+    const taskChannels = cmdCtx?.taskChannels ?? [];
+    const fields = [
+      { name: `Active Agents (${agents.length})`, value: agentList },
+      { name: `In Progress (${activeIssues.length})`, value: activeList },
+      { name: `Recent Completions (${doneIssues.length})`, value: doneList },
+    ];
+    if (taskChannels.length > 0) {
+      fields.push({
+        name: `Task Channels (${taskChannels.length})`,
+        value: taskChannels.map(formatTaskChannelMapping).join("\n"),
+      });
+    }
+
     const embeds: DiscordEmbed[] = [
       {
         title: "Paperclip Status",
         color: COLORS.BLUE,
-        fields: [
-          { name: `Active Agents (${agents.length})`, value: agentList },
-          { name: `In Progress (${activeIssues.length})`, value: activeList },
-          { name: `Recent Completions (${doneIssues.length})`, value: doneList },
-        ],
+        fields,
         footer: { text: "Paperclip" },
         timestamp: new Date().toISOString(),
       },
@@ -1125,44 +1150,6 @@ async function handleConnectChannel(
       ephemeral: true,
     });
   }
-}
-
-interface TaskLookupResult {
-  id: string;
-  identifier?: string | null;
-  title?: string | null;
-  description?: string | null;
-  status?: string | null;
-  priority?: string | null;
-}
-
-/** Resolve a task from what a human typed: an identifier like SOO-42, or a raw id. */
-async function findTaskByIdentifier(
-  ctx: PluginContext,
-  companyId: string,
-  input: string,
-): Promise<TaskLookupResult | null> {
-  const needle = input.trim();
-  if (!needle) return null;
-
-  try {
-    const direct = (await ctx.issues.get(needle, companyId)) as TaskLookupResult | null;
-    if (direct) return direct;
-  } catch (error) {
-    ctx.logger.debug("Task lookup by id failed; trying the identifier list", {
-      input: needle,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  const issues = (await ctx.issues.list({ companyId, limit: 200 })) as TaskLookupResult[];
-  return (
-    issues.find(
-      (issue) =>
-        issue.id === needle ||
-        (issue.identifier ?? "").toLowerCase() === needle.toLowerCase(),
-    ) ?? null
-  );
 }
 
 async function handleTaskChat(

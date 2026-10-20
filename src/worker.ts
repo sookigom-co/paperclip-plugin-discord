@@ -14,6 +14,7 @@ import {
   postEmbedForResult,
   postEmbedWithId,
   getApplicationId,
+  normalizeDiscordId,
   registerSlashCommands,
   respondToInteraction,
   type DiscordEmbed,
@@ -39,13 +40,19 @@ import {
   deleteBinding,
   getBindingByIssue,
   getBindingByThread,
-  resolveThreadForIssue,
+  resolveDestinationForIssue,
   saveBinding,
   taskThreadIntroMessage,
   voiceTargetStateKey,
-  type TaskThreadBinding,
+  type IssueDestination,
   type ThreadAutoArchiveMinutes,
 } from "./task-threads.js";
+import {
+  buildTaskChannelRouter,
+  emptyTaskChannelRouter,
+  warnOnSharedTaskChannels,
+  type TaskChannelRouter,
+} from "./task-channels.js";
 import { resolveCompanyIssuePrefix } from "./company-prefix.js";
 import { fetchApprovalRecord } from "./approval-details.js";
 import { handleInteraction, SLASH_COMMANDS, type CommandContext } from "./commands.js";
@@ -162,6 +169,15 @@ type DiscordConfig = {
    * different companies have dedicated approvals channels.
    */
   approvalsChannels?: Record<string, string>;
+  /**
+   * Per-task channel bindings. Keys are task identifiers (`SOO-61`) or issue
+   * UUIDs; values are Discord channel IDs of channels that already exist. The
+   * named task's own cards and its subtasks' rollups go to that channel, and
+   * plain messages typed there become comments on it.
+   *
+   * Independent of `enableTaskThreads`, and higher priority than a bound thread.
+   */
+  taskChannels?: Record<string, string>;
 };
 
 type IssueNotificationPayload = Record<string, unknown>;
@@ -318,6 +334,8 @@ type DiscordRuntime = {
     autoCreate: boolean;
     autoArchiveMinutes: ThreadAutoArchiveMinutes;
   };
+  /** The `taskChannels` map, resolved to issue ids once per bootstrap. */
+  taskChannels: TaskChannelRouter;
   intelligenceChannelIds: string[];
   retentionDays: number;
   escalationTimeoutMs: number;
@@ -403,12 +421,6 @@ export function _resetRuntimeForTests(): void {
 /** Current runtime, or null when the plugin has not been bootstrapped yet. */
 export function _getRuntimeForTests(): DiscordRuntime | null {
   return runtime;
-}
-
-function normalizeDiscordId(value: unknown): string | null {
-  if (value == null) return null;
-  const normalized = String(value).trim();
-  return normalized.length > 0 ? normalized : null;
 }
 
 function normalizeDiscordIdList(values: unknown): string[] {
@@ -848,23 +860,85 @@ function bindingCompanyId(rt: DiscordRuntime, event: PluginEvent): string {
   return (typeof event.companyId === "string" && event.companyId) || rt.companyId;
 }
 
-/** The nearest bound thread for this event's issue, or null to route by channel. */
-async function resolveBoundThread(
+/**
+ * The nearest mapped channel or bound thread for this event's issue, or null to
+ * route by the ordinary channel chain.
+ */
+async function resolveTaskDestination(
   ctx: PluginContext,
   rt: DiscordRuntime,
   event: PluginEvent,
-): Promise<{ binding: TaskThreadBinding; depth: number } | null> {
-  if (!rt.taskThreads.enabled) return null;
+): Promise<IssueDestination | null> {
+  const mapped = rt.taskChannels.byIssueId;
+  if (mapped.size === 0 && !rt.taskThreads.enabled) return null;
   const issueId = eventIssueId(event);
   if (!issueId) return null;
+
+  const companyId = bindingCompanyId(rt, event);
   try {
-    return await resolveThreadForIssue(ctx, bindingCompanyId(rt, event), issueId);
+    return await resolveDestinationForIssue(ctx, companyId, issueId, {
+      channel: mapped.size > 0 ? (id) => mapped.get(id) ?? null : undefined,
+      thread: rt.taskThreads.enabled ? (id) => getBindingByIssue(ctx, companyId, id) : undefined,
+    });
   } catch (error) {
-    ctx.logger.debug("Task-thread lookup failed; routing by channel instead", {
+    ctx.logger.debug("Task destination lookup failed; routing by channel instead", {
       issueId,
       error: summarizeError(error),
     });
     return null;
+  }
+}
+
+/**
+ * Resolve `taskChannels` for one bootstrap: keys to issue ids, collision
+ * warnings, and the fixed voice target each mapped channel carries.
+ *
+ * Never throws and never fails a bootstrap — an unresolvable map leaves routing
+ * exactly as it was without the map.
+ */
+async function startTaskChannelRouting(
+  ctx: PluginContext,
+  companyId: string,
+  config: DiscordConfig,
+  channels: { defaultChannelId: string; approvalsChannelId: string | null },
+): Promise<TaskChannelRouter> {
+  if (!config.taskChannels || Object.keys(config.taskChannels).length === 0) {
+    return emptyTaskChannelRouter();
+  }
+
+  try {
+    const router = await buildTaskChannelRouter(ctx, companyId, config.taskChannels);
+
+    const topicMap = (await ctx.state.get({
+      scopeKind: "instance",
+      stateKey: "channel-project-map",
+    })) as Record<string, string> | null;
+    const reserved = [
+      { label: "defaultChannelId", channelId: channels.defaultChannelId },
+      { label: "approvalsChannelId", channelId: channels.approvalsChannelId },
+      ...Object.entries(topicMap ?? {}).map(([project, channelId]) => ({
+        label: `topic channel for ${project}`,
+        channelId: normalizeDiscordId(channelId),
+      })),
+    ];
+    warnOnSharedTaskChannels(ctx, router, reserved);
+
+    for (const [channelId, issueId] of router.byChannelId) {
+      await setVoiceTarget(ctx, channelId, { entityId: issueId, entityType: "issue", companyId });
+    }
+
+    ctx.logger.info("Task channel bindings resolved", {
+      companyId,
+      configured: router.mappings.length,
+      active: router.byChannelId.size,
+    });
+    return router;
+  } catch (error) {
+    ctx.logger.warn("Could not resolve taskChannels; per-task channel routing is off this bootstrap", {
+      companyId,
+      error: summarizeError(error),
+    });
+    return emptyTaskChannelRouter();
   }
 }
 
@@ -933,6 +1007,9 @@ async function openThreadForRootIssue(
   if (!rt.taskThreads.enabled || !rt.taskThreads.autoCreate) return;
   const issueId = event.entityId;
   if (!issueId) return;
+  // A task the operator already gave a channel must not also get a thread, or
+  // its conversation window splits in two.
+  if (rt.taskChannels.byIssueId.has(issueId)) return;
 
   const payload = (event.payload ?? {}) as IssueNotificationPayload;
   if (typeof payload.parentId === "string" && payload.parentId.trim()) return;
@@ -973,9 +1050,10 @@ async function notify(
     channelMap,
   );
 
-  // The task's own thread outranks topic routing and every channel override.
-  const bound = await resolveBoundThread(ctx, rt, event);
-  let channelId = bound?.binding.threadId ?? fallbackChannelId;
+  // A channel the operator mapped to the task outranks the task's own thread,
+  // and both outrank topic routing and every channel override.
+  const bound = await resolveTaskDestination(ctx, rt, event);
+  let channelId = bound?.destinationId ?? fallbackChannelId;
   if (!channelId) return;
 
   // Link base, not API base: these formatters only build dashboard deep links.
@@ -988,17 +1066,26 @@ async function notify(
   let result = await postEmbedForResult(ctx, rt.token, channelId, message);
 
   if (!result.ok && bound) {
-    if (result.status === 404) {
-      // 404 is the one status that means the thread is gone for good.
-      await deleteBinding(ctx, bound.binding);
+    if (bound.binding) {
+      if (result.status === 404) {
+        // 404 is the one status that means the thread is gone for good.
+        await deleteBinding(ctx, bound.binding);
+      }
+      ctx.logger.info("Posting to the task thread failed; falling back to the channel", {
+        issueId: bound.binding.issueId,
+        threadId: bound.binding.threadId,
+        status: result.status,
+        bindingDropped: result.status === 404,
+      });
+    } else {
+      // A mapping comes from configuration, so no status retires it — not even 404.
+      ctx.logger.info("Posting to the task's mapped channel failed; falling back to the channel chain", {
+        issueId: bound.issueId,
+        mappedChannelId: bound.destinationId,
+        status: result.status,
+      });
     }
-    ctx.logger.info("Posting to the task thread failed; falling back to the channel", {
-      issueId: bound.binding.issueId,
-      threadId: bound.binding.threadId,
-      status: result.status,
-      bindingDropped: result.status === 404,
-    });
-    const recovered = fallbackChannelId ?? normalizeDiscordId(bound.binding.parentChannelId);
+    const recovered = fallbackChannelId ?? normalizeDiscordId(bound.binding?.parentChannelId);
     if (!recovered) return;
     channelId = recovered;
     message = fullMessage;
@@ -1019,14 +1106,19 @@ async function notify(
           eventType: event.eventType,
         },
       );
-      // And the channel-level pointer voice routes by, last notification winning.
+      // And the channel-level pointer voice routes by, last notification winning
+      // — except in a mapped channel, which stays pointed at the task it is for
+      // however many subtask rollups land there.
+      const mappedIssueId = rt.taskChannels.byChannelId.get(channelId);
       await ctx.state.set(
         { scopeKind: "instance", stateKey: voiceTargetStateKey(channelId) },
-        {
-          entityId: event.entityId,
-          entityType: event.entityType,
-          companyId: event.companyId,
-        },
+        mappedIssueId
+          ? { entityId: mappedIssueId, entityType: "issue", companyId: rt.companyId }
+          : {
+              entityId: event.entityId,
+              entityType: event.entityType,
+              companyId: event.companyId,
+            },
       );
     }
 
@@ -1168,28 +1260,41 @@ async function resolveInboundDestination(
   }
 
   if (threadKey.startsWith("task:")) {
-    // The thread's own binding is the authority on the task the key names.
+    // The channel itself is the authority on the task the key names: either a
+    // thread bound to it, or a channel the operator mapped to it.
     const issueId = threadKey.slice("task:".length);
     if (!issueId || !input.channelId) return null;
     const binding = await getBindingByThread(ctx, input.channelId);
-    if (!binding || binding.issueId !== issueId) return null;
-    if (binding.companyId && binding.companyId !== rt.companyId) {
-      ctx.logger.info(
-        "Ignoring a task thread bound under a company this install no longer serves",
-        { runningCompanyId: rt.companyId, bindingCompanyId: binding.companyId },
-      );
-      return null;
+    if (binding) {
+      if (binding.issueId !== issueId) return null;
+      if (binding.companyId && binding.companyId !== rt.companyId) {
+        ctx.logger.info(
+          "Ignoring a task thread bound under a company this install no longer serves",
+          { runningCompanyId: rt.companyId, bindingCompanyId: binding.companyId },
+        );
+        return null;
+      }
+      return { entityId: binding.issueId, entityType: "issue", companyId: rt.companyId };
     }
-    return { entityId: binding.issueId, entityType: "issue", companyId: rt.companyId };
+    if (rt.taskChannels.byChannelId.get(input.channelId) !== issueId) return null;
+    return { entityId: issueId, entityType: "issue", companyId: rt.companyId };
   }
 
   if (threadKey.startsWith("voice:")) {
-    // An utterance has no reply to inherit a destination from, so try three in order.
+    // An utterance has no reply to inherit a destination from, so try four in order.
     // First: a thread bound to one task.
     if (input.channelId && rt.taskThreads.enabled) {
       const binding = await getBindingByThread(ctx, input.channelId);
       if (binding?.issueId && binding.companyId === rt.companyId) {
         return { entityId: binding.issueId, entityType: "issue", companyId: rt.companyId };
+      }
+    }
+
+    // Then: the task the operator mapped this channel to, which does not move.
+    if (input.channelId) {
+      const mappedIssueId = rt.taskChannels.byChannelId.get(input.channelId);
+      if (mappedIssueId) {
+        return { entityId: mappedIssueId, entityType: "issue", companyId: rt.companyId };
       }
     }
 
@@ -1362,7 +1467,7 @@ async function ingestInbound(
   return "no-destination";
 }
 
-/** Routes an inbound Discord message: a reply first, else the thread's bound task. */
+/** Routes an inbound Discord message: a reply first, else the channel's own task. */
 async function handleMessageCreate(
   ctx: PluginContext,
   rt: DiscordRuntime,
@@ -1390,16 +1495,18 @@ async function handleMessageCreate(
     if (outcome !== "no-destination") return;
   }
 
-  if (!rt.taskThreads.enabled) return;
-  const binding = await getBindingByThread(ctx, message.channel_id);
-  if (!binding) return;
+  const binding = rt.taskThreads.enabled
+    ? await getBindingByThread(ctx, message.channel_id)
+    : null;
+  const issueId = binding?.issueId ?? rt.taskChannels.byChannelId.get(message.channel_id);
+  if (!issueId) return;
 
   await ingestInbound(ctx, rt, {
     channelId: message.channel_id,
     author,
     authorLabel,
     text,
-    threadKey: taskThreadKey(binding.issueId),
+    threadKey: taskThreadKey(issueId),
   });
 }
 
@@ -1689,6 +1796,12 @@ async function bootstrapRuntime(
     autoCreate: config.autoCreateTaskThreads !== false,
     autoArchiveMinutes: normalizeAutoArchiveMinutes(config.taskThreadAutoArchiveMinutes),
   };
+  // Gated on the map itself, not on `enableTaskThreads`: turning threads off
+  // must not take the operator's explicit channel bindings down with them.
+  rt.taskChannels = await startTaskChannelRouting(ctx, companyId, config, {
+    defaultChannelId,
+    approvalsChannelId: normalizeDiscordId(config.approvalsChannelId),
+  });
   rt.cmdCtx = {
     baseUrl,
     companyId,
@@ -1697,6 +1810,7 @@ async function bootstrapRuntime(
     defaultChannelId,
     pluginCtx: ctx,
     taskThreads: rt.taskThreads,
+    taskChannels: rt.taskChannels.mappings,
   };
   rt.adapter = new DiscordAdapter(ctx, token);
   rt.defaultGuildId = defaultGuildId;
