@@ -61,6 +61,8 @@ This is that plugin.
 - `/acp status session:<id>` - Check ACP session status
 - `/acp cancel session:<id>` - Cancel a running ACP session
 - `/acp close session:<id>` - Close a completed ACP session and archive the thread
+- `/task-chat identifier:<SOO-42>` - Open a thread in this channel as the conversation window for one task
+- `/task-unbind` - Stop routing the current thread's messages to the task it is bound to
 
 ### Community intelligence
 - Role-weighted signal extraction from Discord channels (every 6 hours)
@@ -109,6 +111,17 @@ This is that plugin.
 - Replies to escalation notifications resolve the escalation as a human reply
 - Message mappings stored per-channel/message for accurate routing
 - Enable/disable with `enableInbound` config toggle (default: true)
+
+### Task threads (a Discord thread as one task's conversation window)
+- Every task with no parent gets a thread under its issue-created card, bound to that task
+- Inside a bound thread no reply is needed: plain messages become comments on that task
+- Subtask events roll up into the nearest bound ancestor's thread as one `↳ SOO-42 Title — Done` line, so no new window appears
+- An approval request is never compressed — its card arrives whole so Approve/Reject stay pressable
+- Replying to a rolled-up card still routes to that subtask, so precise targeting survives
+- A bound thread is also a fixed destination for voice, which otherwise follows the last notification in the channel
+- `/task-chat <SOO-42>` binds an existing task to a new thread; `/task-unbind` releases the current one
+- Bot authors are still refused everywhere; only the "must be a reply" rule is relaxed, and only inside a bound thread
+- Enable/disable with `enableTaskThreads` (default: true) and `autoCreateTaskThreads` (default: true)
 
 ### Daily digest
 - Configurable digest summaries posted to your Discord channels
@@ -221,6 +234,9 @@ Before filing a bug, confirm which Paperclip host this plugin is actually talkin
 | `enableCommands` | No | Enable slash command handling (default: true) |
 | `enableInbound` | No | Enable reply routing to Paperclip (default: true) |
 | `topicRouting` | No | Route notifications by project-to-channel mappings (default: false) |
+| `enableTaskThreads` | No | Treat a Discord thread as one task's conversation window (default: true) |
+| `autoCreateTaskThreads` | No | Open a thread for every new root task (default: true) |
+| `taskThreadAutoArchiveMinutes` | No | Idle time before Discord archives a task thread: 60, 1440, 4320, or 10080 (default: 10080) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for daily digest, HH:MM (default: 09:00) |
 | `bidailySecondTime` | No | Second digest time for bidaily mode (default: 17:00) |
@@ -262,12 +278,15 @@ If any of the four required variables is missing, voice initializes nothing and 
 ### Where a spoken utterance goes
 
 A voice utterance is not a reply to anything, so it has no message to inherit a
-destination from. Two destinations are tried, in order:
+destination from. Three destinations are tried, in order:
 
-1. **What the transcript's channel is currently about.** Every time the plugin
+1. **The task bound to the transcript's thread**, when speaking in a task thread
+   (see [Task threads](#task-threads-a-discord-thread-as-one-tasks-conversation-window)).
+   A binding does not move, so this destination is fixed.
+2. **What the transcript's channel is currently about.** Every time the plugin
    posts a notification into a channel it records what that notification was
    about, and a spoken utterance follows that pointer.
-2. **`DISCORD_VOICE_DEFAULT_ISSUE_ID`**, when the channel has no pointer yet.
+3. **`DISCORD_VOICE_DEFAULT_ISSUE_ID`**, when the channel has no pointer yet.
 
 Either way the utterance is commented on the resolved issue under the company
 that owns this install, through the same ingress and the same API call a typed
@@ -280,12 +299,12 @@ says so. The same is true for an utterance whose destination Paperclip rejects
 (the issue was deleted, say): the transcript still shows, health reports it, and
 nothing else in the plugin is affected.
 
-**Known phase-1 property:** the channel pointer is *last-notification-wins*. It
-follows the most recent thing the plugin announced in that channel, not what the
-room is actually discussing, so a notification arriving mid-conversation moves
-where the next utterance lands. Set `DISCORD_VOICE_DEFAULT_ISSUE_ID` and use a
-channel the plugin does not post into if you want a fixed destination. A
-genuinely conversation-scoped target needs state voice does not have yet.
+**The channel pointer is *last-notification-wins*.** It follows the most recent
+thing the plugin announced in that channel, not what the room is actually
+discussing, so a notification arriving mid-conversation moves where the next
+utterance lands. Speaking in a bound task thread avoids this entirely; outside
+one, set `DISCORD_VOICE_DEFAULT_ISSUE_ID` and use a channel the plugin does not
+post into if you want a fixed destination.
 
 A pointer is only ever followed for the company that currently owns the install.
 Ownership can move between installs, and a pointer left behind by a previous
