@@ -7,10 +7,11 @@ import {
   type PluginWebhookInput,
   type PluginHealthDiagnostics,
 } from "@paperclipai/plugin-sdk";
-import { DEFAULT_CONFIG, COLORS, METRIC_NAMES, PLUGIN_ID, WEBHOOK_KEYS, ACP_PLUGIN_EVENT_PREFIX, BUDGET_ALERT_THRESHOLD } from "./constants.js";
+import { DEFAULT_CONFIG, COLORS, METRIC_NAMES, PLUGIN_ID, WEBHOOK_KEYS, ACP_PLUGIN_EVENT_PREFIX, BUDGET_ALERT_THRESHOLD, TASK_THREAD_AUTO_ARCHIVE_CHOICES } from "./constants.js";
 import { paperclipFetch } from "./paperclip-fetch.js";
 import {
   postEmbed,
+  postEmbedForResult,
   postEmbedWithId,
   getApplicationId,
   registerSlashCommands,
@@ -27,9 +28,24 @@ import {
   formatBudgetWarning,
   formatAgentRunStarted,
   formatAgentRunFinished,
+  formatSubtaskRollup,
+  isCompressibleEvent,
   humanizePriority,
   buildLinkBaseUrl,
 } from "./formatters.js";
+import {
+  buildThreadName,
+  createThreadFromMessage,
+  deleteBinding,
+  getBindingByIssue,
+  getBindingByThread,
+  resolveThreadForIssue,
+  saveBinding,
+  taskThreadIntroMessage,
+  voiceTargetStateKey,
+  type TaskThreadBinding,
+  type ThreadAutoArchiveMinutes,
+} from "./task-threads.js";
 import { resolveCompanyIssuePrefix } from "./company-prefix.js";
 import { fetchApprovalRecord } from "./approval-details.js";
 import { handleInteraction, SLASH_COMMANDS, type CommandContext } from "./commands.js";
@@ -121,6 +137,10 @@ type DiscordConfig = {
   proactiveScanIntervalMinutes: number;
   enableCommands: boolean;
   enableInbound: boolean;
+  /** Absent on installs configured before task threads existed; both booleans default on. */
+  enableTaskThreads?: boolean;
+  autoCreateTaskThreads?: boolean;
+  taskThreadAutoArchiveMinutes?: number;
   topicRouting: boolean;
   digestMode: string;
   dailyDigestTime: string;
@@ -292,6 +312,12 @@ type DiscordRuntime = {
   errorsChannelId: string | null;
   bdPipelineChannelId: string | null;
   escalationChannelId: string | null;
+  /** Task-thread settings, normalized once per bootstrap. */
+  taskThreads: {
+    enabled: boolean;
+    autoCreate: boolean;
+    autoArchiveMinutes: ThreadAutoArchiveMinutes;
+  };
   intelligenceChannelIds: string[];
   retentionDays: number;
   escalationTimeoutMs: number;
@@ -780,6 +806,151 @@ async function resolveTopicChannel(
   return normalizeDiscordId(channelMap?.[projectName]) ?? null;
 }
 
+/** Clamp a configured auto-archive duration to the four Discord accepts. */
+function normalizeAutoArchiveMinutes(value: unknown): ThreadAutoArchiveMinutes {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return (TASK_THREAD_AUTO_ARCHIVE_CHOICES as readonly number[]).includes(numeric)
+    ? (numeric as ThreadAutoArchiveMinutes)
+    : DEFAULT_CONFIG.taskThreadAutoArchiveMinutes;
+}
+
+/** Thread key for a plain message typed in a thread bound to one task. */
+function taskThreadKey(issueId: string): string {
+  return `task:${issueId}`;
+}
+
+/** The issue an event is about, wherever its event family carries it. */
+function eventIssueId(event: PluginEvent): string | null {
+  const payload = (event.payload ?? {}) as Record<string, unknown>;
+  const direct = typeof payload.issueId === "string" ? payload.issueId.trim() : "";
+  if (direct) return direct;
+
+  if (event.entityType === "issue" && typeof event.entityId === "string" && event.entityId.trim()) {
+    return event.entityId.trim();
+  }
+
+  const linkedIssues = Array.isArray(payload.linkedIssues) ? payload.linkedIssues : [];
+  for (const entry of linkedIssues) {
+    const id = (entry as { id?: unknown } | null)?.id;
+    if (typeof id === "string" && id.trim()) return id.trim();
+  }
+
+  const issueIds = Array.isArray(payload.issueIds) ? payload.issueIds : [];
+  for (const id of issueIds) {
+    if (typeof id === "string" && id.trim()) return id.trim();
+  }
+
+  return null;
+}
+
+/** The company a binding read or write for this event belongs to. */
+function bindingCompanyId(rt: DiscordRuntime, event: PluginEvent): string {
+  return (typeof event.companyId === "string" && event.companyId) || rt.companyId;
+}
+
+/** The nearest bound thread for this event's issue, or null to route by channel. */
+async function resolveBoundThread(
+  ctx: PluginContext,
+  rt: DiscordRuntime,
+  event: PluginEvent,
+): Promise<{ binding: TaskThreadBinding; depth: number } | null> {
+  if (!rt.taskThreads.enabled) return null;
+  const issueId = eventIssueId(event);
+  if (!issueId) return null;
+  try {
+    return await resolveThreadForIssue(ctx, bindingCompanyId(rt, event), issueId);
+  } catch (error) {
+    ctx.logger.debug("Task-thread lookup failed; routing by channel instead", {
+      issueId,
+      error: summarizeError(error),
+    });
+    return null;
+  }
+}
+
+/** Record what a channel is currently about, for voice and reply routing. */
+async function setVoiceTarget(
+  ctx: PluginContext,
+  channelId: string,
+  target: InboundDestination,
+): Promise<void> {
+  await ctx.state.set({ scopeKind: "instance", stateKey: voiceTargetStateKey(channelId) }, target);
+}
+
+/** Open a thread under a just-posted card and bind it to the task; null when Discord refused. */
+async function bindTaskThread(
+  ctx: PluginContext,
+  rt: DiscordRuntime,
+  args: {
+    companyId: string;
+    issueId: string;
+    issueIdentifier: string | null;
+    issueTitle: string | null;
+    channelId: string;
+    messageId: string;
+  },
+): Promise<string | null> {
+  const threadId = await createThreadFromMessage(ctx, rt.token, args.channelId, args.messageId, {
+    name: buildThreadName(args.issueIdentifier, args.issueTitle),
+    autoArchiveMinutes: rt.taskThreads.autoArchiveMinutes,
+  });
+  if (!threadId) return null;
+
+  await saveBinding(ctx, {
+    issueId: args.issueId,
+    issueIdentifier: args.issueIdentifier,
+    threadId,
+    parentChannelId: args.channelId,
+    companyId: args.companyId,
+    createdAt: new Date().toISOString(),
+  });
+  // A bound thread is a fixed voice destination, not a last-notification-wins one.
+  await setVoiceTarget(ctx, threadId, {
+    entityId: args.issueId,
+    entityType: "issue",
+    companyId: args.companyId,
+  });
+  await postEmbed(ctx, rt.token, threadId, {
+    content: taskThreadIntroMessage(args.issueIdentifier),
+  });
+
+  ctx.logger.info("Bound a Discord thread to a Paperclip task", {
+    issueId: args.issueId,
+    threadId,
+    parentChannelId: args.channelId,
+  });
+  return threadId;
+}
+
+/** Open a thread for a root task's issue-created card. Subtasks roll up instead. */
+async function openThreadForRootIssue(
+  ctx: PluginContext,
+  rt: DiscordRuntime,
+  event: PluginEvent,
+  channelId: string,
+  messageId: string,
+): Promise<void> {
+  if (!rt.taskThreads.enabled || !rt.taskThreads.autoCreate) return;
+  const issueId = event.entityId;
+  if (!issueId) return;
+
+  const payload = (event.payload ?? {}) as IssueNotificationPayload;
+  if (typeof payload.parentId === "string" && payload.parentId.trim()) return;
+
+  const companyId = bindingCompanyId(rt, event);
+  const existing = await getBindingByIssue(ctx, companyId, issueId);
+  if (existing) return;
+
+  await bindTaskThread(ctx, rt, {
+    companyId,
+    issueId,
+    issueIdentifier: typeof payload.identifier === "string" ? payload.identifier : null,
+    issueTitle: typeof payload.title === "string" ? payload.title : null,
+    channelId,
+    messageId,
+  });
+}
+
 async function notify(
   ctx: PluginContext,
   rt: DiscordRuntime,
@@ -795,17 +966,46 @@ async function notify(
   }
 
   const topicChannel = overrideChannelId ? null : await resolveTopicChannel(ctx, rt, event);
-  const channelId = await resolveChannel(
+  const fallbackChannelId = await resolveChannel(
     ctx,
     event.companyId,
     topicChannel || overrideChannelId || rt.defaultChannelId,
     channelMap,
   );
+
+  // The task's own thread outranks topic routing and every channel override.
+  const bound = await resolveBoundThread(ctx, rt, event);
+  let channelId = bound?.binding.threadId ?? fallbackChannelId;
   if (!channelId) return;
 
   // Link base, not API base: these formatters only build dashboard deep links.
-  const message = formatter(event, rt.linkBaseUrl || rt.baseUrl);
-  const messageId = await postEmbedWithId(ctx, rt.token, channelId, message);
+  const linkBaseUrl = rt.linkBaseUrl || rt.baseUrl;
+  const fullMessage = formatter(event, linkBaseUrl);
+  // A descendant's event rolls up as one line, unless its card holds a decision to make.
+  const compress = !!bound && bound.depth > 0 && isCompressibleEvent(event.eventType);
+  let message = compress ? formatSubtaskRollup(event, linkBaseUrl) : fullMessage;
+
+  let result = await postEmbedForResult(ctx, rt.token, channelId, message);
+
+  if (!result.ok && bound) {
+    if (result.status === 404) {
+      // 404 is the one status that means the thread is gone for good.
+      await deleteBinding(ctx, bound.binding);
+    }
+    ctx.logger.info("Posting to the task thread failed; falling back to the channel", {
+      issueId: bound.binding.issueId,
+      threadId: bound.binding.threadId,
+      status: result.status,
+      bindingDropped: result.status === 404,
+    });
+    const recovered = fallbackChannelId ?? normalizeDiscordId(bound.binding.parentChannelId);
+    if (!recovered) return;
+    channelId = recovered;
+    message = fullMessage;
+    result = await postEmbedForResult(ctx, rt.token, channelId, message);
+  }
+
+  const messageId = result.ok ? result.messageId : null;
 
   if (messageId) {
     // Store message mapping for reply routing
@@ -819,12 +1019,9 @@ async function notify(
           eventType: event.eventType,
         },
       );
-      // And the channel-level pointer voice routes by. A spoken utterance is
-      // not a reply, so it has no message to inherit a destination from; this
-      // gives it "whatever this channel is currently about". Last notification
-      // wins — see `voiceTargetKey` for what that means at the read side.
+      // And the channel-level pointer voice routes by, last notification winning.
       await ctx.state.set(
-        { scopeKind: "instance", stateKey: voiceTargetKey(channelId) },
+        { scopeKind: "instance", stateKey: voiceTargetStateKey(channelId) },
         {
           entityId: event.entityId,
           entityType: event.entityType,
@@ -936,11 +1133,6 @@ type InboundDestination = {
  */
 type InboundOutcome = "routed" | "empty" | "no-destination" | "rejected" | "stale";
 
-/** State key holding what a text channel is currently about, for voice routing. */
-function voiceTargetKey(channelId: string): string {
-  return `voice_target_${channelId}`;
-}
-
 /** Trim a configured string to null when it carries nothing. */
 function trimToNull(value: string | undefined | null): string | null {
   const trimmed = value?.trim();
@@ -975,22 +1167,37 @@ async function resolveInboundDestination(
     return mapping ?? null;
   }
 
+  if (threadKey.startsWith("task:")) {
+    // The thread's own binding is the authority on the task the key names.
+    const issueId = threadKey.slice("task:".length);
+    if (!issueId || !input.channelId) return null;
+    const binding = await getBindingByThread(ctx, input.channelId);
+    if (!binding || binding.issueId !== issueId) return null;
+    if (binding.companyId && binding.companyId !== rt.companyId) {
+      ctx.logger.info(
+        "Ignoring a task thread bound under a company this install no longer serves",
+        { runningCompanyId: rt.companyId, bindingCompanyId: binding.companyId },
+      );
+      return null;
+    }
+    return { entityId: binding.issueId, entityType: "issue", companyId: rt.companyId };
+  }
+
   if (threadKey.startsWith("voice:")) {
-    // A spoken utterance is not a reply to anything, so it has no message
-    // mapping to inherit. Two destinations, in order.
-    //
-    // First: what the transcript's own channel is currently about — the pointer
-    // `notify()` refreshes every time it posts there.
-    //
-    // KNOWN PHASE-1 PROPERTY: that pointer is last-notification-wins. It follows
-    // the most recent thing the plugin announced in the channel, not the thing
-    // the room is talking about, so a notification arriving mid-conversation
-    // moves where the next utterance lands. Phase 1 accepts this; a real
-    // conversation-scoped target needs state voice does not have yet.
+    // An utterance has no reply to inherit a destination from, so try three in order.
+    // First: a thread bound to one task.
+    if (input.channelId && rt.taskThreads.enabled) {
+      const binding = await getBindingByThread(ctx, input.channelId);
+      if (binding?.issueId && binding.companyId === rt.companyId) {
+        return { entityId: binding.issueId, entityType: "issue", companyId: rt.companyId };
+      }
+    }
+
+    // Then: the last-notification-wins pointer for what this channel is currently about.
     if (input.channelId) {
       const pointer = (await ctx.state.get({
         scopeKind: "instance",
-        stateKey: voiceTargetKey(input.channelId),
+        stateKey: voiceTargetStateKey(input.channelId),
       })) as InboundDestination | null;
       // Ownership can move between the write and the read (see `claimOwnership`).
       // A pointer written for a company this install no longer serves must never
@@ -1155,13 +1362,7 @@ async function ingestInbound(
   return "no-destination";
 }
 
-/**
- * Reply routing for inbound Discord messages.
- *
- * The trust boundary is here and is unchanged: a bot author is refused, and a
- * message that is not a reply to something this plugin posted is refused. Voice
- * does not relax either rule — it does not come through this function at all.
- */
+/** Routes an inbound Discord message: a reply first, else the thread's bound task. */
 async function handleMessageCreate(
   ctx: PluginContext,
   rt: DiscordRuntime,
@@ -1170,18 +1371,35 @@ async function handleMessageCreate(
   if (rt.config.enableInbound === false) return;
   // Ignore bot messages
   if (message.author.bot) return;
-  // Only handle replies to other messages
-  if (!message.message_reference?.message_id) return;
 
-  const refChannelId = message.message_reference.channel_id ?? message.channel_id;
-  const refMessageId = message.message_reference.message_id;
+  const author = `discord:${message.author.username}`;
+  const authorLabel = message.author.username;
+  const text = message.content ?? "";
+  const refMessageId = message.message_reference?.message_id;
+
+  if (refMessageId) {
+    const refChannelId = message.message_reference?.channel_id ?? message.channel_id;
+    const outcome = await ingestInbound(ctx, rt, {
+      channelId: message.channel_id,
+      author,
+      authorLabel,
+      text,
+      threadKey: replyThreadKey(refChannelId, refMessageId),
+    });
+    // An unmapped reply inside a bound thread is still talk about that task.
+    if (outcome !== "no-destination") return;
+  }
+
+  if (!rt.taskThreads.enabled) return;
+  const binding = await getBindingByThread(ctx, message.channel_id);
+  if (!binding) return;
 
   await ingestInbound(ctx, rt, {
     channelId: message.channel_id,
-    author: `discord:${message.author.username}`,
-    authorLabel: message.author.username,
-    text: message.content ?? "",
-    threadKey: replyThreadKey(refChannelId, refMessageId),
+    author,
+    authorLabel,
+    text,
+    threadKey: taskThreadKey(binding.issueId),
   });
 }
 
@@ -1466,6 +1684,11 @@ async function bootstrapRuntime(
     baseUrl,
     await resolveCompanyIssuePrefix(ctx, companyId, baseUrl, paperclipBoardApiKey),
   );
+  rt.taskThreads = {
+    enabled: config.enableTaskThreads !== false,
+    autoCreate: config.autoCreateTaskThreads !== false,
+    autoArchiveMinutes: normalizeAutoArchiveMinutes(config.taskThreadAutoArchiveMinutes),
+  };
   rt.cmdCtx = {
     baseUrl,
     companyId,
@@ -1473,6 +1696,7 @@ async function bootstrapRuntime(
     paperclipBoardApiKey,
     defaultChannelId,
     pluginCtx: ctx,
+    taskThreads: rt.taskThreads,
   };
   rt.adapter = new DiscordAdapter(ctx, token);
   rt.defaultGuildId = defaultGuildId;
@@ -2148,7 +2372,18 @@ const plugin = definePlugin({
       const rt = await ensureRuntime(ctx, event.companyId);
       if (!rt || !rt.config.notifyOnIssueCreated) return;
       const payload = await enrichIssueNotificationPayload(ctx, event);
-      await notify(ctx, rt, { ...event, payload }, formatIssueCreated);
+      const enriched = { ...event, payload };
+      await notify(
+        ctx,
+        rt,
+        enriched,
+        formatIssueCreated,
+        undefined,
+        undefined,
+        async (channelId, messageId) => {
+          await openThreadForRootIssue(ctx, rt, enriched, channelId, messageId);
+        },
+      );
     });
 
     ctx.events.on("issue.updated", async (event: PluginEvent) => {

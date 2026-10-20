@@ -5,6 +5,7 @@ import {
   PLUGIN_ID,
   PLUGIN_VERSION,
   SLOT_IDS,
+  TASK_THREAD_AUTO_ARCHIVE_CHOICES,
   WEBHOOK_KEYS,
 } from "./constants.js";
 
@@ -259,6 +260,28 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "Route Discord replies to bot notifications back to Paperclip as issue comments or escalation responses.",
         default: DEFAULT_CONFIG.enableInbound,
+      },
+      enableTaskThreads: {
+        type: "boolean",
+        title: "Enable task threads",
+        description:
+          "Treat a Discord thread as the conversation window for one Paperclip task: subtask events roll up into it, and plain messages typed there become comments on that task.",
+        default: DEFAULT_CONFIG.enableTaskThreads,
+      },
+      autoCreateTaskThreads: {
+        type: "boolean",
+        title: "Open a thread for each new root task",
+        description:
+          "Create a thread under the issue-created card of every task that has no parent, and bind it to that task. Subtasks never get their own thread.",
+        default: DEFAULT_CONFIG.autoCreateTaskThreads,
+      },
+      taskThreadAutoArchiveMinutes: {
+        type: "number",
+        enum: [...TASK_THREAD_AUTO_ARCHIVE_CHOICES],
+        title: "Task thread auto-archive (minutes)",
+        description:
+          "How long a task thread stays active without a message before Discord archives it. 10080 is one week.",
+        default: DEFAULT_CONFIG.taskThreadAutoArchiveMinutes,
       },
       topicRouting: {
         type: "boolean",

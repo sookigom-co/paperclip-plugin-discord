@@ -244,6 +244,52 @@ export function formatIssueDone(event: PluginEvent, baseUrl?: string): DiscordMe
   };
 }
 
+const ROLLUP_TITLE_LIMIT = 140;
+
+const ROLLUP_EVENT_LABELS: Record<string, string> = {
+  "issue.created": "Created",
+  "agent.run.started": "Run started",
+  "agent.run.finished": "Run finished",
+  "agent.run.failed": "Run failed",
+};
+
+function firstPayloadString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function rollupLabel(eventType: string, status: string | null): string {
+  if (eventType === "issue.updated") return status ? humanizeStatus(status) : "Updated";
+  const label = ROLLUP_EVENT_LABELS[eventType];
+  if (label) return label;
+  return status ? humanizeStatus(status) : eventType;
+}
+
+/** Events whose card must stay whole when rolled up, because it holds a decision to make. */
+const UNCOMPRESSIBLE_EVENT_TYPES = new Set(["approval.created"]);
+
+export function isCompressibleEvent(eventType: string): boolean {
+  return !UNCOMPRESSIBLE_EVENT_TYPES.has(eventType);
+}
+
+/** One line standing in for a full card, for an event rolled up into an ancestor's thread. */
+export function formatSubtaskRollup(event: PluginEvent, baseUrl?: string): DiscordMessage {
+  const p = event.payload as Payload;
+  const identifier = firstPayloadString(p.identifier, p.issueIdentifier);
+  const title = firstPayloadString(p.title, p.issueTitle);
+  const issueId = firstPayloadString(p.issueId) ?? event.entityId ?? null;
+  const status = firstPayloadString(p.status);
+  const base = resolveBaseUrl(baseUrl);
+
+  const name = identifier ?? title ?? "Task";
+  const head = base && issueId ? `[**${name}**](${base}/issues/${issueId})` : `**${name}**`;
+  const titlePart = identifier && title ? ` ${title.slice(0, ROLLUP_TITLE_LIMIT)}` : "";
+
+  return { content: `↳ ${head}${titlePart} — ${rollupLabel(event.eventType, status)}` };
+}
+
 function humanizeActorLabel(value: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();

@@ -1070,8 +1070,9 @@ describe("autocomplete (interaction type 4)", () => {
 });
 
 describe("SLASH_COMMANDS", () => {
-  it("defines clip and acp commands", () => {
-    expect(SLASH_COMMANDS).toHaveLength(2);
+  it("defines clip, acp and the task-thread commands", () => {
+    expect(SLASH_COMMANDS.map((c) => c.name)).toEqual(["clip", "acp", "task-chat", "task-unbind"]);
+
     const clip = SLASH_COMMANDS[0]!;
     expect(clip.name).toBe("clip");
     const subNames = clip.options.map((o) => o.name);
@@ -1079,6 +1080,10 @@ describe("SLASH_COMMANDS", () => {
 
     const acp = SLASH_COMMANDS[1]!;
     expect(acp.name).toBe("acp");
+
+    const taskChat = SLASH_COMMANDS.find((c) => c.name === "task-chat")!;
+    expect(taskChat.options?.map((o) => o.name)).toEqual(["identifier"]);
+    expect(SLASH_COMMANDS.find((c) => c.name === "task-unbind")!.options).toBeUndefined();
   });
 
   it("marks company options as autocomplete-enabled", () => {

@@ -48,7 +48,12 @@ export const DEFAULT_CONFIG = {
   tridailyTimes: "07:00,13:00,19:00",
   companyChannels: {} as Record<string, string>,
   approvalsChannels: {} as Record<string, string>,
+  enableTaskThreads: true,
+  autoCreateTaskThreads: true,
+  taskThreadAutoArchiveMinutes: 10080,
 } as const;
+
+export const TASK_THREAD_AUTO_ARCHIVE_CHOICES = [60, 1440, 4320, 10080] as const;
 
 export const DISCORD_API_BASE = "https://discord.com/api/v10";
 

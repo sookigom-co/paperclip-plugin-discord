@@ -1,7 +1,18 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { type DiscordEmbed, respondToInteraction } from "./discord-api.js";
-import { COLORS, METRIC_NAMES } from "./constants.js";
-import { humanizeStatus } from "./formatters.js";
+import { type DiscordEmbed, postEmbed, postEmbedWithId, respondToInteraction } from "./discord-api.js";
+import { COLORS, DEFAULT_CONFIG, METRIC_NAMES } from "./constants.js";
+import { humanizeStatus, humanizePriority } from "./formatters.js";
+import {
+  buildThreadName,
+  createThreadFromMessage,
+  deleteBinding,
+  getBindingByIssue,
+  getBindingByThread,
+  saveBinding,
+  taskThreadIntroMessage,
+  voiceTargetStateKey,
+  type ThreadAutoArchiveMinutes,
+} from "./task-threads.js";
 import { withRetry, throwOnRetryableStatus } from "./retry.js";
 import { paperclipFetch } from "./paperclip-fetch.js";
 import { handleHandoffButton, handleDiscussionButton, handleAcpCommand } from "./session-registry.js";
@@ -51,6 +62,12 @@ export interface CommandContext {
   defaultChannelId: string;
   /** PluginContext for lazy company-ID resolution at command time. */
   pluginCtx?: PluginContext;
+  /** Task-thread settings, as the runtime normalized them from plugin config. */
+  taskThreads?: {
+    enabled: boolean;
+    autoCreate: boolean;
+    autoArchiveMinutes: ThreadAutoArchiveMinutes;
+  };
 }
 
 function getOption(
@@ -328,6 +345,22 @@ export const SLASH_COMMANDS = [
       },
     ],
   },
+  {
+    name: "task-chat",
+    description: "Open a thread in this channel as the conversation window for one task",
+    options: [
+      {
+        name: "identifier",
+        description: "Task identifier or ID (e.g. SOO-42)",
+        type: 3,
+        required: true,
+      },
+    ],
+  },
+  {
+    name: "task-unbind",
+    description: "Stop routing this thread's messages to the task it is bound to",
+  },
 ];
 
 export async function handleInteraction(
@@ -379,6 +412,20 @@ async function handleSlashCommand(
       companyId,
       cmdCtx?.defaultChannelId ?? "",
     );
+  }
+
+  if (data.name === "task-chat") {
+    return handleTaskChat(
+      ctx,
+      getOption(data.options ?? [], "identifier") ?? "",
+      companyId,
+      interactionChannelId,
+      cmdCtx,
+    );
+  }
+
+  if (data.name === "task-unbind") {
+    return handleTaskUnbind(ctx, interactionChannelId, cmdCtx);
   }
 
   // Ignore slash commands not owned by this plugin. The Discord bot token may be
@@ -1075,6 +1122,229 @@ async function handleConnectChannel(
     return respondToInteraction({
       type: 4,
       content: `Failed to map channel: ${error instanceof Error ? error.message : String(error)}`,
+      ephemeral: true,
+    });
+  }
+}
+
+interface TaskLookupResult {
+  id: string;
+  identifier?: string | null;
+  title?: string | null;
+  description?: string | null;
+  status?: string | null;
+  priority?: string | null;
+}
+
+/** Resolve a task from what a human typed: an identifier like SOO-42, or a raw id. */
+async function findTaskByIdentifier(
+  ctx: PluginContext,
+  companyId: string,
+  input: string,
+): Promise<TaskLookupResult | null> {
+  const needle = input.trim();
+  if (!needle) return null;
+
+  try {
+    const direct = (await ctx.issues.get(needle, companyId)) as TaskLookupResult | null;
+    if (direct) return direct;
+  } catch (error) {
+    ctx.logger.debug("Task lookup by id failed; trying the identifier list", {
+      input: needle,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  const issues = (await ctx.issues.list({ companyId, limit: 200 })) as TaskLookupResult[];
+  return (
+    issues.find(
+      (issue) =>
+        issue.id === needle ||
+        (issue.identifier ?? "").toLowerCase() === needle.toLowerCase(),
+    ) ?? null
+  );
+}
+
+async function handleTaskChat(
+  ctx: PluginContext,
+  identifierArg: string,
+  companyId: string,
+  channelId?: string,
+  cmdCtx?: CommandContext,
+): Promise<unknown> {
+  const taskThreads = cmdCtx?.taskThreads;
+  if (taskThreads && !taskThreads.enabled) {
+    return respondToInteraction({
+      type: 4,
+      content: "Task threads are disabled for this install (`enableTaskThreads`).",
+      ephemeral: true,
+    });
+  }
+
+  if (!identifierArg.trim()) {
+    return respondToInteraction({
+      type: 4,
+      content: "Usage: `/task-chat identifier:<SOO-42>`",
+      ephemeral: true,
+    });
+  }
+
+  if (!channelId) {
+    return respondToInteraction({
+      type: 4,
+      content: "Could not determine the current channel. Run this in the channel the thread should hang under.",
+      ephemeral: true,
+    });
+  }
+
+  const token = cmdCtx?.token ?? "";
+  if (!token) {
+    return respondToInteraction({
+      type: 4,
+      content: "The Discord bot token is not available to this command.",
+      ephemeral: true,
+    });
+  }
+
+  try {
+    const task = await findTaskByIdentifier(ctx, companyId, identifierArg);
+    if (!task) {
+      return respondToInteraction({
+        type: 4,
+        content: `Task "${identifierArg.trim()}" not found.`,
+        ephemeral: true,
+      });
+    }
+
+    const identifier = task.identifier ?? task.id;
+
+    const existing = await getBindingByIssue(ctx, companyId, task.id);
+    if (existing) {
+      return respondToInteraction({
+        type: 4,
+        content: `**${identifier}** already has a conversation thread: <#${existing.threadId}>`,
+        ephemeral: true,
+      });
+    }
+
+    const fields: Array<{ name: string; value: string; inline?: boolean }> = [];
+    if (task.status) {
+      fields.push({ name: "Status", value: `\`${humanizeStatus(task.status)}\``, inline: true });
+    }
+    if (task.priority) {
+      fields.push({ name: "Priority", value: `\`${humanizePriority(task.priority)}\``, inline: true });
+    }
+
+    const embeds: DiscordEmbed[] = [
+      {
+        title: `Task Chat: ${identifier}`,
+        description: task.description
+          ? `**${task.title ?? identifier}**\n> ${task.description.slice(0, 500)}`
+          : `**${task.title ?? identifier}**`,
+        color: COLORS.BLUE,
+        fields,
+        footer: { text: "Paperclip" },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const messageId = await postEmbedWithId(ctx, token, channelId, { embeds });
+    if (!messageId) {
+      return respondToInteraction({
+        type: 4,
+        content: `Could not post the card for **${identifier}** in this channel.`,
+        ephemeral: true,
+      });
+    }
+
+    const threadId = await createThreadFromMessage(ctx, token, channelId, messageId, {
+      name: buildThreadName(identifier, task.title ?? null),
+      autoArchiveMinutes: taskThreads?.autoArchiveMinutes ?? DEFAULT_CONFIG.taskThreadAutoArchiveMinutes,
+    });
+    if (!threadId) {
+      return respondToInteraction({
+        type: 4,
+        content:
+          `Posted the card for **${identifier}**, but Discord refused to open a thread here. ` +
+          "Check the bot's Create Public Threads permission, and that this is not already a thread.",
+        ephemeral: true,
+      });
+    }
+
+    await saveBinding(ctx, {
+      issueId: task.id,
+      issueIdentifier: identifier,
+      threadId,
+      parentChannelId: channelId,
+      companyId,
+      createdAt: new Date().toISOString(),
+    });
+    await ctx.state.set(
+      { scopeKind: "instance", stateKey: voiceTargetStateKey(threadId) },
+      { entityId: task.id, entityType: "issue", companyId },
+    );
+    await postEmbed(ctx, token, threadId, { content: taskThreadIntroMessage(identifier) });
+
+    return respondToInteraction({
+      type: 4,
+      content: `**${identifier}** now has a conversation thread: <#${threadId}>`,
+      ephemeral: true,
+    });
+  } catch (error) {
+    return respondToInteraction({
+      type: 4,
+      content: `Failed to open a task thread: ${error instanceof Error ? error.message : String(error)}`,
+      ephemeral: true,
+    });
+  }
+}
+
+async function handleTaskUnbind(
+  ctx: PluginContext,
+  channelId?: string,
+  cmdCtx?: CommandContext,
+): Promise<unknown> {
+  if (!channelId) {
+    return respondToInteraction({
+      type: 4,
+      content: "Could not determine the current channel. Run this inside the bound thread.",
+      ephemeral: true,
+    });
+  }
+
+  try {
+    const binding = await getBindingByThread(ctx, channelId);
+    if (!binding) {
+      return respondToInteraction({
+        type: 4,
+        content: "This thread is not bound to a task.",
+        ephemeral: true,
+      });
+    }
+
+    await deleteBinding(ctx, binding);
+    await ctx.state.set(
+      { scopeKind: "instance", stateKey: voiceTargetStateKey(binding.threadId) },
+      null,
+    );
+
+    const label = binding.issueIdentifier ?? binding.issueId;
+    return respondToInteraction({
+      type: 4,
+      content:
+        `Unbound this thread from **${label}**. Messages here no longer become comments on it; ` +
+        "replies to cards still route as before.",
+      ephemeral: true,
+    });
+  } catch (error) {
+    ctx.logger.warn("Task thread unbind failed", {
+      channelId,
+      companyId: cmdCtx?.companyId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return respondToInteraction({
+      type: 4,
+      content: `Failed to unbind: ${error instanceof Error ? error.message : String(error)}`,
       ephemeral: true,
     });
   }

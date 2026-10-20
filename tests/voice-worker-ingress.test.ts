@@ -104,6 +104,7 @@ class MockVoiceClient {
 
 import { _resetRuntimeForTests, _getRuntimeForTests } from "../src/worker.js";
 import { _resetCompanyIdCache } from "../src/company-resolver.js";
+import { threadBindingStateKey } from "../src/task-threads.js";
 
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
 const OTHER_COMPANY = "22222222-2222-2222-2222-222222222222";
@@ -111,6 +112,7 @@ const SECRET_ID = "33333333-3333-3333-3333-333333333333";
 const ROTATED_SECRET_ID = "66666666-6666-6666-6666-666666666666";
 const VOICE_ISSUE = "44444444-4444-4444-4444-444444444444";
 const CHANNEL_ISSUE = "55555555-5555-5555-5555-555555555555";
+const BOUND_ISSUE = "77777777-7777-7777-7777-777777777777";
 const TEXT_CHANNEL = "1490608926423646298";
 
 function storedConfig(overrides: Record<string, unknown> = {}) {
@@ -555,6 +557,28 @@ describe("voice destination — channel target, then configured default", () => 
 
     expect(commentPosts()).toHaveLength(1);
     expect(String(commentPosts()[0][0])).toContain(`/api/issues/${VOICE_ISSUE}/comments`);
+  });
+
+  it("prefers a bound task thread over the last-notification channel pointer", async () => {
+    // The channel pointer moves with notifications; a binding does not.
+    const host = buildHost();
+    await definition().setup(host.ctx);
+    await host.deliver();
+    await host.notifyIssue(COMPANY_A, CHANNEL_ISSUE);
+
+    host.stateStore.set(`instance::${threadBindingStateKey(TEXT_CHANNEL)}`, {
+      issueId: BOUND_ISSUE,
+      issueIdentifier: "SOO-9",
+      threadId: TEXT_CHANNEL,
+      parentChannelId: "1490610083728588950",
+      companyId: COMPANY_A,
+      createdAt: new Date().toISOString(),
+    });
+
+    await voiceConfig().ingestUtterance(utterance());
+
+    expect(commentPosts()).toHaveLength(1);
+    expect(String(commentPosts()[0][0])).toContain(`/api/issues/${BOUND_ISSUE}/comments`);
   });
 
   it("ingests nothing when the only channel target belongs to another company", async () => {

@@ -28,8 +28,12 @@ export function threadBindingStateKey(threadId: string): string {
   return `task_thread_tid_${threadId}`;
 }
 
-// The thread key is read on inbound Discord events, which carry no company, so
-// it lives in instance scope and the record names its own company.
+/** State key holding what a channel is currently about, for voice routing. */
+export function voiceTargetStateKey(channelId: string): string {
+  return `voice_target_${channelId}`;
+}
+
+// Instance scope: inbound Discord events carry no company, so the record names its own.
 function threadScope(threadId: string) {
   return { scopeKind: "instance" as const, stateKey: threadBindingStateKey(threadId) };
 }
@@ -77,8 +81,7 @@ export async function deleteBinding(
   await clearState(ctx, threadScope(binding.threadId));
 }
 
-// Hosts older than the `state.delete` RPC only expose set(); a null value reads
-// back the same way an absent row does.
+// Clears a state row, falling back to a null write on hosts without `state.delete`.
 async function clearState(ctx: PluginContext, scope: Parameters<PluginContext["state"]["set"]>[0]): Promise<void> {
   if (typeof ctx.state.delete === "function") {
     await ctx.state.delete(scope);
@@ -120,8 +123,7 @@ async function getParentIssueId(
   }
 }
 
-// Walks up the parent chain and returns the nearest bound thread, so subtask
-// events can roll up into the thread of whichever ancestor owns one.
+// Walks up the parent chain and returns the nearest bound thread with its depth.
 export async function resolveThreadForIssue(
   ctx: PluginContext,
   companyId: string,
@@ -159,13 +161,21 @@ export function truncateThreadName(name: string): string {
   return (trimmed || kept) + THREAD_NAME_ELLIPSIS;
 }
 
+// The line a freshly bound thread opens with, telling the board how to use it.
+export function taskThreadIntroMessage(identifier: string | null): string {
+  const name = identifier ? `**${identifier}**` : "이 태스크";
+  return (
+    `${name} 전용 대화창입니다. 답글을 달지 않고 그냥 입력해도 이 태스크의 코멘트로 올라가고, ` +
+    "하위 태스크 소식도 새 창 없이 모두 여기로 모입니다."
+  );
+}
+
 export function buildThreadName(identifier: string | null, title: string | null): string {
   const parts = [identifier, title].filter((part): part is string => !!part && part.trim().length > 0);
   return truncateThreadName(parts.join(" "));
 }
 
-// Promotes an already-posted message into a thread; null means the caller
-// should fall back to the plain channel.
+// Promotes an already-posted message into a thread; null when Discord refused.
 export async function createThreadFromMessage(
   ctx: PluginContext,
   token: string,

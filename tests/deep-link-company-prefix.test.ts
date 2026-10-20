@@ -368,27 +368,27 @@ async function emit(
   }
 }
 
-/** The link-button URLs of the last embed the plugin posted to Discord. */
-function postedButtonUrls(discordFetch: ReturnType<typeof vi.fn>): string[] {
-  const posts = discordFetch.mock.calls.filter(
-    (call: any[]) => typeof call[0] === "string" && call[0].includes("/channels/") && typeof call[1]?.body === "string",
-  );
+/**
+ * The last embed card posted to Discord. Plain-text lines the plugin also sends
+ * — the line a bound task thread opens with — are not cards and are skipped.
+ */
+function postedMessage(discordFetch: ReturnType<typeof vi.fn>): any {
+  const posts = discordFetch.mock.calls
+    .filter(
+      (call: any[]) => typeof call[0] === "string" && call[0].includes("/channels/") && typeof call[1]?.body === "string",
+    )
+    .map((call: any[]) => JSON.parse(call[1].body))
+    .filter((body: any) => Array.isArray(body.embeds));
   const last = posts[posts.length - 1];
-  if (!last) throw new Error("Expected a Discord channel POST with a JSON body");
-  const body = JSON.parse(last[1].body);
-  return (body.components ?? []).flatMap((row: any) =>
-    (row.components ?? []).map((c: any) => c.url).filter(Boolean),
-  );
+  if (!last) throw new Error("Expected a Discord channel POST carrying an embed");
+  return last;
 }
 
-/** The whole last message the plugin posted to Discord. */
-function postedMessage(discordFetch: ReturnType<typeof vi.fn>): any {
-  const posts = discordFetch.mock.calls.filter(
-    (call: any[]) => typeof call[0] === "string" && call[0].includes("/channels/") && typeof call[1]?.body === "string",
+/** The link-button URLs of the last embed the plugin posted to Discord. */
+function postedButtonUrls(discordFetch: ReturnType<typeof vi.fn>): string[] {
+  return (postedMessage(discordFetch).components ?? []).flatMap((row: any) =>
+    (row.components ?? []).map((c: any) => c.url).filter(Boolean),
   );
-  const last = posts[posts.length - 1];
-  if (!last) throw new Error("Expected a Discord channel POST with a JSON body");
-  return JSON.parse(last[1].body);
 }
 
 function postedButtonLabels(discordFetch: ReturnType<typeof vi.fn>): string[] {
