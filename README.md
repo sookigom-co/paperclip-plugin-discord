@@ -137,6 +137,11 @@ created, moved or deleted — the plugin only routes — so the bot needs no `MA
 }
 ```
 
+The Paperclip settings UI edits one field at a time, so the **Per-task channel bindings** box
+takes the inner map alone — `{"SOO-61": "123456789012345678"}`. Pasting the wrapper above into
+that box nests the key under itself and the save is rejected with `400`, because the schema
+requires every value to be a channel ID string.
+
 - **Keys** are task identifiers (`SOO-61`, case-insensitive) or issue UUIDs. A key that names
   no task in this company is warned about once at startup and otherwise ignored; the other
   keys keep working.
