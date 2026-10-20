@@ -251,7 +251,6 @@ const ROLLUP_EVENT_LABELS: Record<string, string> = {
   "agent.run.started": "Run started",
   "agent.run.finished": "Run finished",
   "agent.run.failed": "Run failed",
-  "approval.created": "Approval requested",
 };
 
 function firstPayloadString(...values: unknown[]): string | null {
@@ -266,6 +265,13 @@ function rollupLabel(eventType: string, status: string | null): string {
   const label = ROLLUP_EVENT_LABELS[eventType];
   if (label) return label;
   return status ? humanizeStatus(status) : eventType;
+}
+
+/** Events whose card must stay whole when rolled up, because it holds a decision to make. */
+const UNCOMPRESSIBLE_EVENT_TYPES = new Set(["approval.created"]);
+
+export function isCompressibleEvent(eventType: string): boolean {
+  return !UNCOMPRESSIBLE_EVENT_TYPES.has(eventType);
 }
 
 /** One line standing in for a full card, for an event rolled up into an ancestor's thread. */

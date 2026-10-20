@@ -67,6 +67,8 @@ function storedConfig(overrides: Record<string, unknown> = {}) {
 let issueFixtures: Record<string, any>;
 /** Channels Discord answers 404 for, as a deleted thread does. */
 let deadChannels: Set<string>;
+/** Channels Discord answers 403 for, as a locked thread or a missing permission does. */
+let forbiddenChannels: Set<string>;
 /** When true, Discord refuses to open a thread (403), as a missing permission does. */
 let threadCreationFails: boolean;
 let postedMessageCount: number;
@@ -99,6 +101,9 @@ function buildHost() {
       const channelId = postMatch[1]!;
       if (deadChannels.has(channelId)) {
         return { ok: false, status: 404, headers: new Headers(), json: async () => ({}), text: async () => "Unknown Channel" };
+      }
+      if (forbiddenChannels.has(channelId)) {
+        return { ok: false, status: 403, headers: new Headers(), json: async () => ({}), text: async () => "Missing Permissions" };
       }
       postedMessageCount += 1;
       return {
@@ -266,6 +271,7 @@ beforeEach(() => {
   gatewayConnects.length = 0;
   issueFixtures = {};
   deadChannels = new Set();
+  forbiddenChannels = new Set();
   threadCreationFails = false;
   postedMessageCount = 0;
   createdThreadCount = 0;
@@ -389,6 +395,32 @@ describe("outbound: a root task gets a thread, descendants roll up into it", () 
     const posts = messagePosts(host.discordFetch);
     expect(posts[0]!.channelId).toBe("thread-1");
     expect(posts[0]!.body.embeds[0].title).toContain("SOO-1");
+  });
+
+  it("keeps a subtask's approval card whole in the thread, buttons and all", async () => {
+    const host = buildHost();
+    issueFixtures["root-1"] = { id: "root-1", identifier: "SOO-1", title: "루트", parentId: null };
+    issueFixtures["child-1"] = { id: "child-1", identifier: "SOO-2", title: "하위", parentId: "root-1" };
+    await mount(host.ctx, storedConfig({ notifyOnApprovalCreated: true }));
+    seedBinding(host.stateStore, { issueId: "root-1", threadId: "thread-1", issueIdentifier: "SOO-1" });
+
+    eventCounter += 1;
+    await emit(host.eventHandlers, "approval.created", {
+      eventId: `evt-appr-${eventCounter}`,
+      eventType: "approval.created",
+      occurredAt: new Date().toISOString(),
+      companyId: COMPANY,
+      entityId: "appr-1",
+      entityType: "approval",
+      payload: { approvalId: "appr-1", type: "decision", title: "배포 승인", issueId: "child-1" },
+    });
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.channelId).toBe("thread-1");
+    const buttonIds = posts[0]!.body.components[0].components.map((c: any) => c.custom_id);
+    expect(buttonIds).toContain("approval_approve_appr-1");
+    expect(buttonIds).toContain("approval_reject_appr-1");
   });
 
   it("routes a run event to the thread of the issue its payload names", async () => {
@@ -550,6 +582,33 @@ describe("degradation: a thread that cannot be created, or no longer exists", ()
     expect(posts[1]!.body.embeds[0].title).toContain("SOO-2");
     expect(host.stateStore.get(`instance::${threadBindingStateKey("thread-1")}`)).toBeNull();
     expect(host.stateStore.get(`company:${COMPANY}:${issueBindingStateKey("root-1")}`)).toBeNull();
+  });
+
+  it("re-posts to the parent channel but keeps the binding when the thread post fails with 403", async () => {
+    const host = buildHost();
+    issueFixtures["root-1"] = { id: "root-1", identifier: "SOO-1", title: "루트", parentId: null };
+    issueFixtures["child-1"] = {
+      id: "child-1",
+      identifier: "SOO-2",
+      title: "하위 태스크",
+      status: "todo",
+      parentId: "root-1",
+    };
+    await mount(host.ctx);
+    const binding = seedBinding(host.stateStore, {
+      issueId: "root-1",
+      threadId: "thread-1",
+      issueIdentifier: "SOO-1",
+    });
+    forbiddenChannels.add("thread-1");
+
+    await emit(host.eventHandlers, "issue.created", issueEvent("issue.created", "child-1"));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts.map((p) => p.channelId)).toEqual(["thread-1", DEFAULT_CHANNEL]);
+    expect(posts[1]!.body.embeds[0].title).toContain("SOO-2");
+    expect(host.stateStore.get(`instance::${threadBindingStateKey("thread-1")}`)).toEqual(binding);
+    expect(host.stateStore.get(`company:${COMPANY}:${issueBindingStateKey("root-1")}`)).toEqual(binding);
   });
 
   it("stops routing inbound talk once the dead thread's binding is gone", async () => {

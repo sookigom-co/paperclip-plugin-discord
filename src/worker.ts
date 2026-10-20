@@ -29,6 +29,7 @@ import {
   formatAgentRunStarted,
   formatAgentRunFinished,
   formatSubtaskRollup,
+  isCompressibleEvent,
   humanizePriority,
   buildLinkBaseUrl,
 } from "./formatters.js";
@@ -980,18 +981,23 @@ async function notify(
   // Link base, not API base: these formatters only build dashboard deep links.
   const linkBaseUrl = rt.linkBaseUrl || rt.baseUrl;
   const fullMessage = formatter(event, linkBaseUrl);
-  // A descendant's event rolled up into an ancestor's thread arrives as one line.
-  let message = bound && bound.depth > 0 ? formatSubtaskRollup(event, linkBaseUrl) : fullMessage;
+  // A descendant's event rolls up as one line, unless its card holds a decision to make.
+  const compress = !!bound && bound.depth > 0 && isCompressibleEvent(event.eventType);
+  let message = compress ? formatSubtaskRollup(event, linkBaseUrl) : fullMessage;
 
   let result = await postEmbedForResult(ctx, rt.token, channelId, message);
 
-  if (!result.ok && bound && result.status === 404) {
-    // The thread is gone: drop the binding rather than lose the notification.
-    ctx.logger.info("Task thread is gone; dropping its binding and falling back to the channel", {
+  if (!result.ok && bound) {
+    if (result.status === 404) {
+      // 404 is the one status that means the thread is gone for good.
+      await deleteBinding(ctx, bound.binding);
+    }
+    ctx.logger.info("Posting to the task thread failed; falling back to the channel", {
       issueId: bound.binding.issueId,
       threadId: bound.binding.threadId,
+      status: result.status,
+      bindingDropped: result.status === 404,
     });
-    await deleteBinding(ctx, bound.binding);
     const recovered = fallbackChannelId ?? normalizeDiscordId(bound.binding.parentChannelId);
     if (!recovered) return;
     channelId = recovered;
@@ -1013,10 +1019,7 @@ async function notify(
           eventType: event.eventType,
         },
       );
-      // And the channel-level pointer voice routes by. A spoken utterance is
-      // not a reply, so it has no message to inherit a destination from; this
-      // gives it "whatever this channel is currently about". Last notification
-      // wins — see `voiceTargetStateKey` for what that means at the read side.
+      // And the channel-level pointer voice routes by, last notification winning.
       await ctx.state.set(
         { scopeKind: "instance", stateKey: voiceTargetStateKey(channelId) },
         {
@@ -1181,10 +1184,8 @@ async function resolveInboundDestination(
   }
 
   if (threadKey.startsWith("voice:")) {
-    // A spoken utterance is not a reply to anything, so it has no message
-    // mapping to inherit. Three destinations, in order.
-    //
-    // First: a thread bound to one task — a destination that does not move.
+    // An utterance has no reply to inherit a destination from, so try three in order.
+    // First: a thread bound to one task.
     if (input.channelId && rt.taskThreads.enabled) {
       const binding = await getBindingByThread(ctx, input.channelId);
       if (binding?.issueId && binding.companyId === rt.companyId) {
@@ -1192,10 +1193,7 @@ async function resolveInboundDestination(
       }
     }
 
-    // Then: what the transcript's own channel is currently about — the pointer
-    // `notify()` refreshes every time it posts there. That pointer is
-    // last-notification-wins, so an unbound channel's destination moves when a
-    // notification arrives mid-conversation.
+    // Then: the last-notification-wins pointer for what this channel is currently about.
     if (input.channelId) {
       const pointer = (await ctx.state.get({
         scopeKind: "instance",
@@ -1364,14 +1362,7 @@ async function ingestInbound(
   return "no-destination";
 }
 
-/**
- * Reply routing for inbound Discord messages.
- *
- * A bot author is refused unconditionally, here and everywhere, and voice does
- * not come through this function at all. The only relaxed rule is "must be a
- * reply", and only inside a thread a human bound to one task; a reply still
- * wins over the binding, so a rolled-up subtask card stays answerable.
- */
+/** Routes an inbound Discord message: a reply first, else the thread's bound task. */
 async function handleMessageCreate(
   ctx: PluginContext,
   rt: DiscordRuntime,

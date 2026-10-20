@@ -33,8 +33,7 @@ export function voiceTargetStateKey(channelId: string): string {
   return `voice_target_${channelId}`;
 }
 
-// The thread key is read on inbound Discord events, which carry no company, so
-// it lives in instance scope and the record names its own company.
+// Instance scope: inbound Discord events carry no company, so the record names its own.
 function threadScope(threadId: string) {
   return { scopeKind: "instance" as const, stateKey: threadBindingStateKey(threadId) };
 }
@@ -82,8 +81,7 @@ export async function deleteBinding(
   await clearState(ctx, threadScope(binding.threadId));
 }
 
-// Hosts older than the `state.delete` RPC only expose set(); a null value reads
-// back the same way an absent row does.
+// Clears a state row, falling back to a null write on hosts without `state.delete`.
 async function clearState(ctx: PluginContext, scope: Parameters<PluginContext["state"]["set"]>[0]): Promise<void> {
   if (typeof ctx.state.delete === "function") {
     await ctx.state.delete(scope);
@@ -125,8 +123,7 @@ async function getParentIssueId(
   }
 }
 
-// Walks up the parent chain and returns the nearest bound thread, so subtask
-// events can roll up into the thread of whichever ancestor owns one.
+// Walks up the parent chain and returns the nearest bound thread with its depth.
 export async function resolveThreadForIssue(
   ctx: PluginContext,
   companyId: string,
@@ -178,8 +175,7 @@ export function buildThreadName(identifier: string | null, title: string | null)
   return truncateThreadName(parts.join(" "));
 }
 
-// Promotes an already-posted message into a thread; null means the caller
-// should fall back to the plain channel.
+// Promotes an already-posted message into a thread; null when Discord refused.
 export async function createThreadFromMessage(
   ctx: PluginContext,
   token: string,
