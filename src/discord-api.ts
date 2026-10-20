@@ -41,7 +41,7 @@ export interface DiscordChannelMessage {
   member?: { roles: string[] };
 }
 
-async function discordFetch(
+export async function discordFetch(
   ctx: PluginContext,
   token: string,
   path: string,
@@ -61,7 +61,7 @@ async function discordFetch(
   return ctx.http.fetch(url, init);
 }
 
-function normalizeDiscordPathId(id: string | number): string {
+export function normalizeDiscordPathId(id: string | number): string {
   return String(id);
 }
 
