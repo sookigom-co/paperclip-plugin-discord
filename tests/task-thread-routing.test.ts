@@ -778,6 +778,26 @@ describe("/task-chat and /task-unbind", () => {
     expect(result.data.content).toContain("disabled");
   });
 
+  it("points at the mapped channel instead of opening a thread that would get nothing", async () => {
+    const host = buildHost();
+    issueFixtures["root-1"] = { id: "root-1", identifier: "SOO-42", title: "기존 태스크" };
+
+    const result = (await handleInteraction(
+      host.ctx,
+      interaction("task-chat", [{ name: "identifier", value: "SOO-42" }]),
+      cmdCtx({
+        taskChannels: [
+          { configKey: "SOO-42", channelId: "ch-mapped", issueId: "root-1", issueIdentifier: "SOO-42" },
+        ],
+      }),
+    )) as any;
+
+    expect(threadCreations(host.discordFetch)).toHaveLength(0);
+    expect(messagePosts(host.discordFetch)).toHaveLength(0);
+    expect(host.stateStore.get(`company:${COMPANY}:${issueBindingStateKey("root-1")}`)).toBeUndefined();
+    expect(result.data.content).toContain("<#ch-mapped>");
+  });
+
   it("unbinds the current thread and clears its voice target", async () => {
     const host = buildHost();
     seedBinding(host.stateStore, { issueId: "root-1", threadId: "thread-3", issueIdentifier: "SOO-42" });

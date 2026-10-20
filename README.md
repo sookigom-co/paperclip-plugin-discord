@@ -123,6 +123,54 @@ This is that plugin.
 - Bot authors are still refused everywhere; only the "must be a reply" rule is relaxed, and only inside a bound thread
 - Enable/disable with `enableTaskThreads` (default: true) and `autoCreateTaskThreads` (default: true)
 
+### Task channels (an existing channel as one task's conversation window)
+
+`taskChannels` binds a task you name to a Discord channel that already exists. Nothing is
+created, moved or deleted — the plugin only routes — so the bot needs no `MANAGE_CHANNELS`.
+
+```json
+{
+  "taskChannels": {
+    "SOO-61": "123456789012345678",
+    "4f1c2a90-...": "987654321098765432"
+  }
+}
+```
+
+- **Keys** are task identifiers (`SOO-61`, case-insensitive) or issue UUIDs. A key that names
+  no task in this company is warned about once at startup and otherwise ignored; the other
+  keys keep working.
+- **Values** are Discord channel IDs of channels that already exist.
+- Independent of `enableTaskThreads`: a non-empty map routes even with threads switched off.
+- The mapped task's own cards arrive whole; its subtasks roll up as one
+  `↳ SOO-62 Title — Done` line, and an approval request is never compressed.
+- A task with a mapped channel never also gets a thread — one window, not two. `/task-chat` on
+  such a task opens nothing and points you at the mapped channel instead.
+- The mapped channel is a fixed voice destination: subtask rollups do not take it over.
+- A mapping comes from configuration, so nothing retires it at runtime. If Discord refuses a
+  post (missing permission, deleted channel), the full card falls back to the ordinary channel
+  chain and the mapping stays.
+- `/clip status` lists every mapping and whether its key resolved.
+
+> **Plain messages in a mapped channel become comments on its task.** Do not point a mapping
+> at a general chat channel, your `defaultChannelId`, your `approvalsChannelId`, or a topic
+> route — ordinary conversation there would be filed on the task. The plugin warns at startup
+> when it sees that overlap, but follows the configuration as written. Bot authors are still
+> refused everywhere; only the "must be a reply" rule is relaxed.
+
+#### Destination priority
+
+A notification's channel is decided in this order, first match winning:
+
+```
+taskChannels mapping  >  bound thread  >  topic channel  >  channel override  >  default channel
+```
+
+The first two are resolved by walking up the task's parent chain (up to 5 hops), and the
+**nearest ancestor wins**: a subtask with its own thread keeps it even when a grandparent is
+mapped, and a mapped parent wins over a thread bound further up. When one task has both a
+mapping and a thread, the mapping — the thing an operator wrote down — wins.
+
 ### Daily digest
 - Configurable digest summaries posted to your Discord channels
 - Modes: `daily` (once), `bidaily` (twice), `tridaily` (three times per day)
@@ -237,6 +285,7 @@ Before filing a bug, confirm which Paperclip host this plugin is actually talkin
 | `enableTaskThreads` | No | Treat a Discord thread as one task's conversation window (default: true) |
 | `autoCreateTaskThreads` | No | Open a thread for every new root task (default: true) |
 | `taskThreadAutoArchiveMinutes` | No | Idle time before Discord archives a task thread: 60, 1440, 4320, or 10080 (default: 10080) |
+| `taskChannels` | No | Map one task to one existing channel: keys are task identifiers (`SOO-61`) or issue UUIDs, values are Discord channel IDs. Outranks every other route; plain messages there become comments on the task (default: `{}`) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for daily digest, HH:MM (default: 09:00) |
 | `bidailySecondTime` | No | Second digest time for bidaily mode (default: 17:00) |
@@ -278,15 +327,18 @@ If any of the four required variables is missing, voice initializes nothing and 
 ### Where a spoken utterance goes
 
 A voice utterance is not a reply to anything, so it has no message to inherit a
-destination from. Three destinations are tried, in order:
+destination from. Four destinations are tried, in order:
 
 1. **The task bound to the transcript's thread**, when speaking in a task thread
    (see [Task threads](#task-threads-a-discord-thread-as-one-tasks-conversation-window)).
    A binding does not move, so this destination is fixed.
-2. **What the transcript's channel is currently about.** Every time the plugin
+2. **The task the transcript's channel is mapped to** in `taskChannels`
+   (see [Task channels](#task-channels-an-existing-channel-as-one-tasks-conversation-window)).
+   A mapping comes from configuration, so this destination is fixed too.
+3. **What the transcript's channel is currently about.** Every time the plugin
    posts a notification into a channel it records what that notification was
    about, and a spoken utterance follows that pointer.
-3. **`DISCORD_VOICE_DEFAULT_ISSUE_ID`**, when the channel has no pointer yet.
+4. **`DISCORD_VOICE_DEFAULT_ISSUE_ID`**, when the channel has no pointer yet.
 
 Either way the utterance is commented on the resolved issue under the company
 that owns this install, through the same ingress and the same API call a typed

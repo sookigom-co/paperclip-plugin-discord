@@ -65,6 +65,13 @@ export function normalizeDiscordPathId(id: string | number): string {
   return String(id);
 }
 
+/** A configured Discord snowflake, trimmed, or null when nothing was configured. */
+export function normalizeDiscordId(value: unknown): string | null {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 export async function postEmbed(
   ctx: PluginContext,
   token: string,

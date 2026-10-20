@@ -111,6 +111,14 @@ const manifest: PaperclipPluginManifestV1 = {
         additionalProperties: { type: "string" },
         default: DEFAULT_CONFIG.approvalsChannels,
       },
+      taskChannels: {
+        type: "object",
+        title: "Per-task channel bindings",
+        description:
+          "Make one existing Discord channel the conversation window for one task. Keys are task identifiers (SOO-61) or issue UUIDs, values are Discord channel IDs. Outranks task threads, topic routing and every channel override; the task's subtask news rolls up there too. Plain messages typed in a mapped channel become comments on its task, so do not reuse a general chat channel.",
+        additionalProperties: { type: "string" },
+        default: DEFAULT_CONFIG.taskChannels,
+      },
       errorsChannelId: {
         type: "string",
         title: "Errors Channel ID",

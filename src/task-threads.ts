@@ -123,12 +123,31 @@ async function getParentIssueId(
   }
 }
 
-// Walks up the parent chain and returns the nearest bound thread with its depth.
-export async function resolveThreadForIssue(
+/** Where one task's news goes: a channel the operator mapped, or a bound thread. */
+export interface IssueDestination {
+  destinationId: string;
+  kind: "thread" | "channel";
+  /** How many parent hops away the task owning this destination is. */
+  depth: number;
+  issueId: string;
+  /** The binding behind a `thread` destination; null for a mapped channel. */
+  binding: TaskThreadBinding | null;
+}
+
+/** The two places a destination can come from, either of which may be absent. */
+export interface IssueDestinationSources {
+  channel?: (issueId: string) => string | null;
+  thread?: (issueId: string) => Promise<TaskThreadBinding | null>;
+}
+
+// Walks up the parent chain and returns the nearest destination with its depth.
+export async function resolveDestinationForIssue(
   ctx: PluginContext,
   companyId: string,
   issueId: string,
-): Promise<{ binding: TaskThreadBinding; depth: number } | null> {
+  sources: IssueDestinationSources,
+): Promise<IssueDestination | null> {
+  if (!sources.channel && !sources.thread) return null;
   const visited = new Set<string>();
   let currentId: string | null = issueId;
 
@@ -136,13 +155,33 @@ export async function resolveThreadForIssue(
     if (!currentId || visited.has(currentId)) return null;
     visited.add(currentId);
 
-    const binding = await getBindingByIssue(ctx, companyId, currentId);
-    if (binding) return { binding, depth };
+    // At the same task a configured channel outranks an auto-opened thread.
+    const channelId = sources.channel?.(currentId) ?? null;
+    if (channelId) {
+      return { destinationId: channelId, kind: "channel", depth, issueId: currentId, binding: null };
+    }
+
+    const binding = sources.thread ? await sources.thread(currentId) : null;
+    if (binding) {
+      return { destinationId: binding.threadId, kind: "thread", depth, issueId: currentId, binding };
+    }
 
     currentId = await getParentIssueId(ctx, companyId, currentId);
   }
 
   return null;
+}
+
+// Walks up the parent chain and returns the nearest bound thread with its depth.
+export async function resolveThreadForIssue(
+  ctx: PluginContext,
+  companyId: string,
+  issueId: string,
+): Promise<{ binding: TaskThreadBinding; depth: number } | null> {
+  const resolved = await resolveDestinationForIssue(ctx, companyId, issueId, {
+    thread: (id) => getBindingByIssue(ctx, companyId, id),
+  });
+  return resolved?.binding ? { binding: resolved.binding, depth: resolved.depth } : null;
 }
 
 export function truncateThreadName(name: string): string {
