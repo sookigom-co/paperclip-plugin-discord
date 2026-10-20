@@ -113,12 +113,18 @@ export async function postEmbed(
   }
 }
 
-export async function postEmbedWithId(
+/** A post attempt's outcome, keeping the HTTP status callers must branch on. */
+export type PostResult =
+  | { ok: true; messageId: string | null }
+  | { ok: false; status: number | null };
+
+/** Posts a message and reports the failing status, for callers that retry elsewhere. */
+export async function postEmbedForResult(
   ctx: PluginContext,
   token: string,
   channelId: string | number,
   message: DiscordMessage,
-): Promise<string | null> {
+): Promise<PostResult> {
   const safeChannelId = normalizeDiscordPathId(channelId);
   try {
     let messageId: string | null = null;
@@ -155,14 +161,25 @@ export async function postEmbedWithId(
     });
 
     await ctx.metrics.write(METRIC_NAMES.sent, 1);
-    return messageId;
+    return { ok: true, messageId };
   } catch (error) {
     ctx.logger.error("Discord notification delivery failed", {
       error: error instanceof Error ? error.message : String(error),
     });
     await ctx.metrics.write(METRIC_NAMES.failed, 1);
-    return null;
+    const status = (error as { status?: unknown })?.status;
+    return { ok: false, status: typeof status === "number" ? status : null };
   }
+}
+
+export async function postEmbedWithId(
+  ctx: PluginContext,
+  token: string,
+  channelId: string | number,
+  message: DiscordMessage,
+): Promise<string | null> {
+  const result = await postEmbedForResult(ctx, token, channelId, message);
+  return result.ok ? result.messageId : null;
 }
 
 export async function registerSlashCommands(

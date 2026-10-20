@@ -28,6 +28,11 @@ export function threadBindingStateKey(threadId: string): string {
   return `task_thread_tid_${threadId}`;
 }
 
+/** State key holding what a channel is currently about, for voice routing. */
+export function voiceTargetStateKey(channelId: string): string {
+  return `voice_target_${channelId}`;
+}
+
 // The thread key is read on inbound Discord events, which carry no company, so
 // it lives in instance scope and the record names its own company.
 function threadScope(threadId: string) {
@@ -157,6 +162,15 @@ export function truncateThreadName(name: string): string {
   }
   const trimmed = kept.trimEnd();
   return (trimmed || kept) + THREAD_NAME_ELLIPSIS;
+}
+
+// The line a freshly bound thread opens with, telling the board how to use it.
+export function taskThreadIntroMessage(identifier: string | null): string {
+  const name = identifier ? `**${identifier}**` : "이 태스크";
+  return (
+    `${name} 전용 대화창입니다. 답글을 달지 않고 그냥 입력해도 이 태스크의 코멘트로 올라가고, ` +
+    "하위 태스크 소식도 새 창 없이 모두 여기로 모입니다."
+  );
 }
 
 export function buildThreadName(identifier: string | null, title: string | null): string {
