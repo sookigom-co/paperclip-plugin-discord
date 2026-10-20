@@ -9,6 +9,9 @@ export interface TaskLookupResult {
   priority?: string | null;
 }
 
+const LOOKUP_PAGE_SIZE = 200;
+const MAX_LOOKUP_PAGES = 25;
+
 /** Resolve a task from what a human typed: an identifier like SOO-42, or a raw id. */
 export async function findTaskByIdentifier(
   ctx: PluginContext,
@@ -28,12 +31,26 @@ export async function findTaskByIdentifier(
     });
   }
 
-  const issues = (await ctx.issues.list({ companyId, limit: 200 })) as TaskLookupResult[];
-  return (
-    issues.find(
-      (issue) =>
-        issue.id === needle ||
-        (issue.identifier ?? "").toLowerCase() === needle.toLowerCase(),
-    ) ?? null
-  );
+  const wanted = needle.toLowerCase();
+  const matches = (issue: TaskLookupResult) =>
+    issue.id === needle || (issue.identifier ?? "").toLowerCase() === wanted;
+
+  for (let page = 0; page < MAX_LOOKUP_PAGES; page += 1) {
+    const issues = (await ctx.issues.list({
+      companyId,
+      limit: LOOKUP_PAGE_SIZE,
+      offset: page * LOOKUP_PAGE_SIZE,
+    })) as TaskLookupResult[] | null;
+    if (!issues || issues.length === 0) return null;
+
+    const hit = issues.find(matches);
+    if (hit) return hit;
+    if (issues.length < LOOKUP_PAGE_SIZE) return null;
+  }
+
+  ctx.logger.warn("Gave up looking for a task identifier after the page limit", {
+    input: needle,
+    pagesSearched: MAX_LOOKUP_PAGES,
+  });
+  return null;
 }

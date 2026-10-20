@@ -144,7 +144,8 @@ created, moved or deleted — the plugin only routes — so the bot needs no `MA
 - Independent of `enableTaskThreads`: a non-empty map routes even with threads switched off.
 - The mapped task's own cards arrive whole; its subtasks roll up as one
   `↳ SOO-62 Title — Done` line, and an approval request is never compressed.
-- A task with a mapped channel never also gets an auto-opened thread — one window, not two.
+- A task with a mapped channel never also gets a thread — one window, not two. `/task-chat` on
+  such a task opens nothing and points you at the mapped channel instead.
 - The mapped channel is a fixed voice destination: subtask rollups do not take it over.
 - A mapping comes from configuration, so nothing retires it at runtime. If Discord refuses a
   post (missing permission, deleted channel), the full card falls back to the ordinary channel

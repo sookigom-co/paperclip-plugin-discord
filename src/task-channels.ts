@@ -68,8 +68,7 @@ async function resolveConfigKey(
   if (cached) return cached;
 
   const task = await lookupQuietly(ctx, companyId, configKey);
-  // A UUID key is already an issue id, and configuration is the authority: a
-  // lookup that could not confirm it must not retire the mapping.
+  // An unconfirmed UUID key still stands, since configuration is the authority.
   const issueId = task?.id ?? (UUID_REGEX.test(configKey) ? configKey : null);
   const resolution: KeyResolution = { issueId, issueIdentifier: task?.identifier ?? null };
   if (issueId) await ctx.state.set(scope, resolution);
@@ -122,13 +121,7 @@ export async function buildTaskChannelRouter(
   return router;
 }
 
-/**
- * Warn when a mapped channel is also a general notification channel.
- *
- * Plain chat in a mapped channel becomes a comment on its task, so sharing the
- * channel with the default, approvals or a topic route turns ordinary talk into
- * task comments. The configuration is still followed as written.
- */
+/** Warn when a mapped channel is also a general notification channel, and follow the configuration anyway. */
 export function warnOnSharedTaskChannels(
   ctx: PluginContext,
   router: TaskChannelRouter,

@@ -169,14 +169,7 @@ type DiscordConfig = {
    * different companies have dedicated approvals channels.
    */
   approvalsChannels?: Record<string, string>;
-  /**
-   * Per-task channel bindings. Keys are task identifiers (`SOO-61`) or issue
-   * UUIDs; values are Discord channel IDs of channels that already exist. The
-   * named task's own cards and its subtasks' rollups go to that channel, and
-   * plain messages typed there become comments on it.
-   *
-   * Independent of `enableTaskThreads`, and higher priority than a bound thread.
-   */
+  /** Task identifier or issue UUID to the id of an existing Discord channel that is that task's conversation window. */
   taskChannels?: Record<string, string>;
 };
 
@@ -860,10 +853,7 @@ function bindingCompanyId(rt: DiscordRuntime, event: PluginEvent): string {
   return (typeof event.companyId === "string" && event.companyId) || rt.companyId;
 }
 
-/**
- * The nearest mapped channel or bound thread for this event's issue, or null to
- * route by the ordinary channel chain.
- */
+/** The nearest mapped channel or bound thread for this event's issue, else null to route by channel. */
 async function resolveTaskDestination(
   ctx: PluginContext,
   rt: DiscordRuntime,
@@ -889,13 +879,7 @@ async function resolveTaskDestination(
   }
 }
 
-/**
- * Resolve `taskChannels` for one bootstrap: keys to issue ids, collision
- * warnings, and the fixed voice target each mapped channel carries.
- *
- * Never throws and never fails a bootstrap — an unresolvable map leaves routing
- * exactly as it was without the map.
- */
+/** Resolve `taskChannels` for one bootstrap: keys to issue ids, collision warnings, and fixed voice targets. */
 async function startTaskChannelRouting(
   ctx: PluginContext,
   companyId: string,
@@ -1007,8 +991,7 @@ async function openThreadForRootIssue(
   if (!rt.taskThreads.enabled || !rt.taskThreads.autoCreate) return;
   const issueId = event.entityId;
   if (!issueId) return;
-  // A task the operator already gave a channel must not also get a thread, or
-  // its conversation window splits in two.
+  // A task with a mapped channel gets no thread, or its window splits in two.
   if (rt.taskChannels.byIssueId.has(issueId)) return;
 
   const payload = (event.payload ?? {}) as IssueNotificationPayload;
@@ -1050,8 +1033,7 @@ async function notify(
     channelMap,
   );
 
-  // A channel the operator mapped to the task outranks the task's own thread,
-  // and both outrank topic routing and every channel override.
+  // A mapped channel outranks the task's own thread, and both outrank topic routing and overrides.
   const bound = await resolveTaskDestination(ctx, rt, event);
   let channelId = bound?.destinationId ?? fallbackChannelId;
   if (!channelId) return;
@@ -1106,9 +1088,7 @@ async function notify(
           eventType: event.eventType,
         },
       );
-      // And the channel-level pointer voice routes by, last notification winning
-      // — except in a mapped channel, which stays pointed at the task it is for
-      // however many subtask rollups land there.
+      // And the channel-level pointer voice routes by: last notification wins, except in a mapped channel.
       const mappedIssueId = rt.taskChannels.byChannelId.get(channelId);
       await ctx.state.set(
         { scopeKind: "instance", stateKey: voiceTargetStateKey(channelId) },
@@ -1260,8 +1240,7 @@ async function resolveInboundDestination(
   }
 
   if (threadKey.startsWith("task:")) {
-    // The channel itself is the authority on the task the key names: either a
-    // thread bound to it, or a channel the operator mapped to it.
+    // The channel is the authority on the task the key names, by binding or by mapping.
     const issueId = threadKey.slice("task:".length);
     if (!issueId || !input.channelId) return null;
     const binding = await getBindingByThread(ctx, input.channelId);
@@ -1796,8 +1775,7 @@ async function bootstrapRuntime(
     autoCreate: config.autoCreateTaskThreads !== false,
     autoArchiveMinutes: normalizeAutoArchiveMinutes(config.taskThreadAutoArchiveMinutes),
   };
-  // Gated on the map itself, not on `enableTaskThreads`: turning threads off
-  // must not take the operator's explicit channel bindings down with them.
+  // Gated on the map itself, not on `enableTaskThreads`.
   rt.taskChannels = await startTaskChannelRouting(ctx, companyId, config, {
     defaultChannelId,
     approvalsChannelId: normalizeDiscordId(config.approvalsChannelId),

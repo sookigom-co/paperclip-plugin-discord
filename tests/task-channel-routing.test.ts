@@ -151,7 +151,11 @@ function buildHost() {
     },
     agents: { list: vi.fn(async () => []), invoke: vi.fn() },
     issues: {
-      list: vi.fn(async () => Object.values(issueFixtures)),
+      list: vi.fn(async (params: { limit?: number; offset?: number } = {}) => {
+        const all = Object.values(issueFixtures);
+        const offset = params.offset ?? 0;
+        return params.limit == null ? all.slice(offset) : all.slice(offset, offset + params.limit);
+      }),
       get: vi.fn(async (issueId: string, companyId?: string) => {
         if (companyId && companyId !== COMPANY) return null;
         return issueFixtures[issueId] ?? null;
@@ -326,6 +330,19 @@ describe("config: resolving taskChannels keys", () => {
     await mount(host.ctx, storedConfig({ taskChannels: { "soo-61": TASK_CHANNEL } }));
 
     expect(_getRuntimeForTests()!.taskChannels.byIssueId.get(ROOT_UUID)).toBe(TASK_CHANNEL);
+  });
+
+  it("resolves an identifier key that sits past the first page of issues", async () => {
+    const host = buildHost();
+    for (let i = 0; i < 240; i += 1) {
+      issueFixtures[`filler-${i}`] = { id: `filler-${i}`, identifier: `SOO-${900 + i}`, parentId: null };
+    }
+    seedIssues();
+
+    await mount(host.ctx);
+
+    expect(_getRuntimeForTests()!.taskChannels.byIssueId.get(ROOT_UUID)).toBe(TASK_CHANNEL);
+    expect(host.ctx.issues.list.mock.calls.some(([p]: any[]) => p?.offset === 200)).toBe(true);
   });
 
   it("caches a resolved key so a second bootstrap does not look it up again", async () => {

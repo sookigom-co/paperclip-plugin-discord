@@ -1205,6 +1205,16 @@ async function handleTaskChat(
 
     const identifier = task.identifier ?? task.id;
 
+    // A mapped channel outranks a thread, so a thread here would never be posted to.
+    const mapped = (cmdCtx?.taskChannels ?? []).find((m) => m.issueId === task.id);
+    if (mapped) {
+      return respondToInteraction({
+        type: 4,
+        content: `**${identifier}** is already mapped to <#${mapped.channelId}> by \`taskChannels\`. Talk to it there — a thread would not receive its updates.`,
+        ephemeral: true,
+      });
+    }
+
     const existing = await getBindingByIssue(ctx, companyId, task.id);
     if (existing) {
       return respondToInteraction({
