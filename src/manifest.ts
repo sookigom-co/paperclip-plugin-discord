@@ -136,9 +136,9 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       fullTaskResponses: {
         type: "boolean",
-        title: "Full responses in a taskChannels-mapped channel",
+        title: "Full task responses (fullText) — master switch for every mapped channel",
         description:
-          "The default for every mapped channel: post the completing comment in full under the card instead of the card's 200-character Summary excerpt. Long responses are split across messages. Task threads and every other channel keep the excerpt. A taskChannels entry with its own fullText ignores this default.",
+          "Turn full responses on or off for all taskChannels-mapped channels at once: post the completing comment in full under the card instead of the card's 200-character Summary excerpt. Long responses are split across messages. Task threads and every other channel keep the excerpt. A taskChannels entry with its own fullText ignores this switch, and `/clip fulltext on|off` overrides it from Discord without editing settings.",
         default: DEFAULT_CONFIG.fullTaskResponses,
       },
       errorsChannelId: {

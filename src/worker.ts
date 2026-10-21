@@ -36,6 +36,7 @@ import {
   withoutSummaryField,
 } from "./formatters.js";
 import { postFullResponse } from "./full-response.js";
+import { readFullTextOverrides, resolveFullText } from "./full-text-settings.js";
 import {
   buildThreadName,
   createThreadFromMessage,
@@ -1025,9 +1026,20 @@ function completionBody(event: PluginEvent): string | null {
   return body || null;
 }
 
-/** Whether this mapped channel takes the response in full: its own `fullText`, else the global setting. */
-function wantsFullResponse(rt: DiscordRuntime, bound: IssueDestination): boolean {
-  return rt.taskChannels.fullTextByIssueId.get(bound.issueId) ?? rt.config.fullTaskResponses !== false;
+/** Whether this mapped channel takes the response in full: its `/clip fulltext` switch, then its entry, then the default. */
+async function wantsFullResponse(
+  ctx: PluginContext,
+  rt: DiscordRuntime,
+  bound: IssueDestination,
+  companyId: string,
+): Promise<boolean> {
+  const overrides = await readFullTextOverrides(ctx, companyId);
+  return resolveFullText({
+    overrides,
+    issueId: bound.issueId,
+    entryFullText: rt.taskChannels.fullTextByIssueId.get(bound.issueId) ?? null,
+    configDefault: rt.config.fullTaskResponses !== false,
+  }).fullText;
 }
 
 async function notify(
@@ -1065,7 +1077,10 @@ async function notify(
   let message = compress ? formatSubtaskRollup(event, linkBaseUrl) : fullMessage;
 
   // A channel mapped to one task gets the response itself, so its card drops the excerpt of it.
-  let responseBody = bound?.kind === "channel" && wantsFullResponse(rt, bound) ? completionBody(event) : null;
+  let responseBody =
+    bound?.kind === "channel" && (await wantsFullResponse(ctx, rt, bound, bindingCompanyId(rt, event)))
+      ? completionBody(event)
+      : null;
   if (responseBody) message = withoutSummaryField(message);
 
   let result = await postEmbedForResult(ctx, rt.token, channelId, message);
@@ -1815,6 +1830,7 @@ async function bootstrapRuntime(
     pluginCtx: ctx,
     taskThreads: rt.taskThreads,
     taskChannels: rt.taskChannels.mappings,
+    fullTaskResponses: config.fullTaskResponses !== false,
   };
   rt.adapter = new DiscordAdapter(ctx, token);
   rt.defaultGuildId = defaultGuildId;
