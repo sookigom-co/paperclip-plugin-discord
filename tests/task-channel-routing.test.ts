@@ -525,6 +525,111 @@ describe("outbound: the mapped channel is where the task's news goes", () => {
   });
 });
 
+describe("outbound: a task's own window gets the response in full", () => {
+  const RESPONSE = `${"결론부터 말하면 됩니다. ".repeat(20)}\n\n마지막 줄입니다.`;
+
+  function doneEvent(entityId: string, lastComment: string | null = RESPONSE) {
+    issueFixtures[entityId].status = "done";
+    issueFixtures[entityId].completedAt = "2026-10-20T00:00:00.000Z";
+    return issueEvent("issue.updated", entityId, {
+      status: "done",
+      ...(lastComment === null ? {} : { lastComment }),
+    });
+  }
+
+  it("posts the whole comment under the card and drops the card's excerpt", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(2);
+    expect(posts.every((post) => post.channelId === TASK_CHANNEL)).toBe(true);
+    expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).not.toContain("Summary");
+    expect(posts[1]!.body.content).toBe(RESPONSE);
+    expect(posts[1]!.body.embeds).toBeUndefined();
+  });
+
+  it("splits a response too long for one Discord message", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+    const long = Array.from({ length: 8 }, (_, i) => `${i}단락 `.padEnd(700, "가")).join("\n\n");
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID, long));
+
+    const parts = messagePosts(host.discordFetch).slice(1).map((post) => post.body.content as string);
+    expect(parts.length).toBeGreaterThan(2);
+    for (const part of parts) expect(part.length).toBeLessThanOrEqual(2000);
+    expect(parts.join("\n\n")).toBe(long);
+  });
+
+  it("follows a rolled-up subtask line with that subtask's response", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent("child-1"));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(2);
+    expect(posts[0]!.body.content).toContain("↳ [**SOO-62**]");
+    expect(posts[1]!.body.content).toBe(RESPONSE);
+  });
+
+  it("keeps the excerpt and posts nothing extra in a general channel", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, storedConfig());
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.channelId).toBe(DEFAULT_CHANNEL);
+    const summary = posts[0]!.body.embeds[0].fields.find((f: any) => f.name === "Summary");
+    expect(summary.value).toBe(RESPONSE.slice(0, 200));
+  });
+
+  it("keeps the excerpt when the operator switches full responses off", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, mappedConfig({ fullTaskResponses: false }));
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).toContain("Summary");
+  });
+
+  it("restores the excerpt when the mapped channel refuses the card", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+    forbiddenChannels.add(TASK_CHANNEL);
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.channelId).toBe(DEFAULT_CHANNEL);
+    expect(posts[1]!.body.embeds[0].fields.map((f: any) => f.name)).toContain("Summary");
+  });
+
+  it("posts only the card when the task completed with no comment", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID, null));
+
+    expect(messagePosts(host.discordFetch)).toHaveLength(1);
+  });
+});
+
 describe("outbound: the nearest ancestor owns the destination", () => {
   it("lets a descendant's own thread win over a mapped grandparent", async () => {
     const host = buildHost();

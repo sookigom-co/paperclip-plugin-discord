@@ -163,6 +163,22 @@ requires every value to be a channel ID string.
 > when it sees that overlap, but follows the configuration as written. Bot authors are still
 > refused everywhere; only the "must be a reply" rule is relaxed.
 
+#### Full responses in a task's own window
+
+In a mapped channel or a bound thread the completion card is followed by the completing
+comment **in full**, and the card drops its 200-character `Summary` field so the text is not
+printed twice. Everywhere else the card keeps the excerpt and nothing extra is posted.
+
+- Applies to the window's own task and to a subtask rolled up into it, so the `↳ SOO-62 …`
+  line is followed by what that subtask actually answered.
+- A response longer than one Discord message is split at paragraph, then line, then word
+  boundaries. A code fence left open at a cut is closed and reopened in the next message.
+- At most 8 messages (~15k characters); beyond that the last one says to read the rest on the
+  task.
+- When the card falls back to the ordinary channel chain, the excerpt comes back with it and
+  the full text is not posted to the fallback channel.
+- Switch off with `fullTaskResponses: false` (default: true) to keep the excerpt everywhere.
+
 #### Destination priority
 
 A notification's channel is decided in this order, first match winning:
@@ -291,6 +307,7 @@ Before filing a bug, confirm which Paperclip host this plugin is actually talkin
 | `autoCreateTaskThreads` | No | Open a thread for every new root task (default: true) |
 | `taskThreadAutoArchiveMinutes` | No | Idle time before Discord archives a task thread: 60, 1440, 4320, or 10080 (default: 10080) |
 | `taskChannels` | No | Map one task to one existing channel: keys are task identifiers (`SOO-61`) or issue UUIDs, values are Discord channel IDs. Outranks every other route; plain messages there become comments on the task (default: `{}`) |
+| `fullTaskResponses` | No | In a mapped channel or bound thread, post the completing comment in full instead of the card's `Summary` excerpt (default: true) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for daily digest, HH:MM (default: 09:00) |
 | `bidailySecondTime` | No | Second digest time for bidaily mode (default: 17:00) |

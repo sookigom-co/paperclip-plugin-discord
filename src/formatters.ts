@@ -180,6 +180,22 @@ export function formatIssueCreated(event: PluginEvent, baseUrl?: string): Discor
   };
 }
 
+/** The done card's excerpt of the completion comment; dropped when the full text follows it. */
+export const SUMMARY_FIELD_NAME = "Summary";
+
+/** The same card without its excerpt field, for a window that gets the response in full. */
+export function withoutSummaryField(message: DiscordMessage): DiscordMessage {
+  if (!message.embeds?.length) return message;
+  return {
+    ...message,
+    embeds: message.embeds.map((embed) =>
+      embed.fields?.some((field) => field.name === SUMMARY_FIELD_NAME)
+        ? { ...embed, fields: embed.fields.filter((field) => field.name !== SUMMARY_FIELD_NAME) }
+        : embed,
+    ),
+  };
+}
+
 export function formatIssueDone(event: PluginEvent, baseUrl?: string): DiscordMessage {
   const p = event.payload as Payload;
   const identifier = String(p.identifier ?? p.title ?? event.entityId);
@@ -205,7 +221,7 @@ export function formatIssueDone(event: PluginEvent, baseUrl?: string): DiscordMe
   fields.push({ name: "Completed by", value: completedBy, inline: true });
   if (status) fields.push({ name: "Status", value: `\`${humanizeStatus(status)}\``, inline: true });
   if (priority) fields.push({ name: "Priority", value: `\`${humanizePriority(priority)}\``, inline: true });
-  fields.push({ name: "Summary", value: summary });
+  fields.push({ name: SUMMARY_FIELD_NAME, value: summary });
   if (parentIdentifier) {
     const parentLine = parentTitle
       ? `**${parentIdentifier}** — ${parentTitle}`
