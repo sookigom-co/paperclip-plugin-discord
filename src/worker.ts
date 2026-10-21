@@ -1058,8 +1058,9 @@ async function notify(
   const compress = !!bound && bound.depth > 0 && isCompressibleEvent(event.eventType);
   let message = compress ? formatSubtaskRollup(event, linkBaseUrl) : fullMessage;
 
-  // A window dedicated to one task gets the response itself, so its card drops the excerpt of it.
-  let responseBody = bound && rt.config.fullTaskResponses !== false ? completionBody(event) : null;
+  // A channel mapped to one task gets the response itself, so its card drops the excerpt of it.
+  let responseBody =
+    bound?.kind === "channel" && rt.config.fullTaskResponses !== false ? completionBody(event) : null;
   if (responseBody) message = withoutSummaryField(message);
 
   let result = await postEmbedForResult(ctx, rt.token, channelId, message);

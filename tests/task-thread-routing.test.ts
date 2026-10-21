@@ -397,7 +397,7 @@ describe("outbound: a root task gets a thread, descendants roll up into it", () 
     expect(posts[0]!.body.embeds[0].title).toContain("SOO-1");
   });
 
-  it("posts the completing comment in full under the card in a bound thread", async () => {
+  it("keeps the card's excerpt in a bound thread: full responses are for mapped channels only", async () => {
     const host = buildHost();
     issueFixtures["root-1"] = {
       id: "root-1",
@@ -418,10 +418,10 @@ describe("outbound: a root task gets a thread, descendants roll up into it", () 
     );
 
     const posts = messagePosts(host.discordFetch);
-    expect(posts).toHaveLength(2);
-    expect(posts[1]!.channelId).toBe("thread-1");
-    expect(posts[1]!.body.content).toBe(response);
-    expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).not.toContain("Summary");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.channelId).toBe("thread-1");
+    const summary = posts[0]!.body.embeds[0].fields.find((f: any) => f.name === "Summary");
+    expect(summary.value).toBe(response.slice(0, 200));
   });
 
   it("keeps a subtask's approval card whole in the thread, buttons and all", async () => {
