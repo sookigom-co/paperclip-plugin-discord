@@ -119,6 +119,13 @@ const manifest: PaperclipPluginManifestV1 = {
         additionalProperties: { type: "string" },
         default: DEFAULT_CONFIG.taskChannels,
       },
+      fullTaskResponses: {
+        type: "boolean",
+        title: "Full responses in a task's own window",
+        description:
+          "In a mapped channel or a bound task thread, post the completing comment in full under the card instead of the card's 200-character Summary excerpt. Long responses are split across messages; other channels keep the excerpt.",
+        default: DEFAULT_CONFIG.fullTaskResponses,
+      },
       errorsChannelId: {
         type: "string",
         title: "Errors Channel ID",

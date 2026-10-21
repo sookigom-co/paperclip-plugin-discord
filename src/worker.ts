@@ -33,7 +33,9 @@ import {
   isCompressibleEvent,
   humanizePriority,
   buildLinkBaseUrl,
+  withoutSummaryField,
 } from "./formatters.js";
+import { postFullResponse } from "./full-response.js";
 import {
   buildThreadName,
   createThreadFromMessage,
@@ -171,6 +173,8 @@ type DiscordConfig = {
   approvalsChannels?: Record<string, string>;
   /** Task identifier or issue UUID to the id of an existing Discord channel that is that task's conversation window. */
   taskChannels?: Record<string, string>;
+  /** Absent on installs configured before full responses existed; defaults on. */
+  fullTaskResponses?: boolean;
 };
 
 type IssueNotificationPayload = Record<string, unknown>;
@@ -1011,6 +1015,15 @@ async function openThreadForRootIssue(
   });
 }
 
+/** The completion comment a done card only excerpts, or null for every other event. */
+function completionBody(event: PluginEvent): string | null {
+  if (event.eventType !== "issue.updated") return null;
+  const payload = (event.payload ?? {}) as IssueNotificationPayload;
+  if (String(payload.status ?? "") !== "done") return null;
+  const body = typeof payload.lastComment === "string" ? payload.lastComment.trim() : "";
+  return body || null;
+}
+
 async function notify(
   ctx: PluginContext,
   rt: DiscordRuntime,
@@ -1045,6 +1058,10 @@ async function notify(
   const compress = !!bound && bound.depth > 0 && isCompressibleEvent(event.eventType);
   let message = compress ? formatSubtaskRollup(event, linkBaseUrl) : fullMessage;
 
+  // A window dedicated to one task gets the response itself, so its card drops the excerpt of it.
+  let responseBody = bound && rt.config.fullTaskResponses !== false ? completionBody(event) : null;
+  if (responseBody) message = withoutSummaryField(message);
+
   let result = await postEmbedForResult(ctx, rt.token, channelId, message);
 
   if (!result.ok && bound) {
@@ -1071,12 +1088,15 @@ async function notify(
     if (!recovered) return;
     channelId = recovered;
     message = fullMessage;
+    responseBody = null;
     result = await postEmbedForResult(ctx, rt.token, channelId, message);
   }
 
   const messageId = result.ok ? result.messageId : null;
 
   if (messageId) {
+    await postFullResponse(ctx, rt.token, channelId, responseBody);
+
     // Store message mapping for reply routing
     if (rt.config.enableInbound !== false) {
       await ctx.state.set(

@@ -397,6 +397,33 @@ describe("outbound: a root task gets a thread, descendants roll up into it", () 
     expect(posts[0]!.body.embeds[0].title).toContain("SOO-1");
   });
 
+  it("posts the completing comment in full under the card in a bound thread", async () => {
+    const host = buildHost();
+    issueFixtures["root-1"] = {
+      id: "root-1",
+      identifier: "SOO-1",
+      title: "루트",
+      status: "done",
+      parentId: null,
+      completedAt: "2026-10-20T00:00:00.000Z",
+    };
+    await mount(host.ctx);
+    seedBinding(host.stateStore, { issueId: "root-1", threadId: "thread-1", issueIdentifier: "SOO-1" });
+    const response = `${"답변 전문입니다. ".repeat(30)}\n\n끝.`;
+
+    await emit(
+      host.eventHandlers,
+      "issue.updated",
+      issueEvent("issue.updated", "root-1", { status: "done", lastComment: response }),
+    );
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.channelId).toBe("thread-1");
+    expect(posts[1]!.body.content).toBe(response);
+    expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).not.toContain("Summary");
+  });
+
   it("keeps a subtask's approval card whole in the thread, buttons and all", async () => {
     const host = buildHost();
     issueFixtures["root-1"] = { id: "root-1", identifier: "SOO-1", title: "루트", parentId: null };
