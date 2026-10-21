@@ -593,6 +593,21 @@ describe("outbound: a task's own window gets the response in full", () => {
     expect(summary.value).toBe(RESPONSE.slice(0, 200));
   });
 
+  it("keeps the excerpt when a thread, not the mapping, owns the window", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+    seedBinding(host.stateStore, { issueId: "child-1", threadId: "thread-child", issueIdentifier: "SOO-62" });
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent("child-1"));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.channelId).toBe("thread-child");
+    const summary = posts[0]!.body.embeds[0].fields.find((f: any) => f.name === "Summary");
+    expect(summary.value).toBe(RESPONSE.slice(0, 200));
+  });
+
   it("keeps the excerpt when the operator switches full responses off", async () => {
     const host = buildHost();
     seedIssues();
