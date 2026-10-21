@@ -10,7 +10,7 @@ export interface TaskChannelMapping {
   /** The key exactly as the operator wrote it. */
   configKey: string;
   channelId: string;
-  /** This entry's `fullText`, or null to follow the global `fullTaskResponses`. */
+  /** This entry's `fullText`, or null to follow the global `taskFullText`. */
   fullText: boolean | null;
   /** Null when the key names no task this company has; the entry is then inert. */
   issueId: string | null;

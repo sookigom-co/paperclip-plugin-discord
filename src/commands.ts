@@ -81,8 +81,8 @@ export interface CommandContext {
   };
   /** `taskChannels` as the runtime resolved it, for `/clip status` to show. */
   taskChannels?: TaskChannelMapping[];
-  /** The configured `fullTaskResponses` default, which `/clip fulltext` reports and overrides. */
-  fullTaskResponses?: boolean;
+  /** The configured `taskFullText` default, which `/clip fulltext` reports and overrides. */
+  taskFullText?: boolean;
 }
 
 function getOption(
@@ -686,7 +686,7 @@ async function handleStatus(
       { name: `Recent Completions (${doneIssues.length})`, value: doneList },
     ];
     if (taskChannels.length > 0) {
-      const configDefault = cmdCtx?.fullTaskResponses !== false;
+      const configDefault = cmdCtx?.taskFullText !== false;
       const { overrides, decisions } = await decideFullTextForMappings(
         ctx,
         companyId,
@@ -1472,7 +1472,7 @@ async function fullTextStatusEmbed(
   );
   const defaultOn = resolveDefaultFullText(overrides, configDefault);
   const defaultSource =
-    overrides.global === null ? "plugin settings (`fullTaskResponses`)" : "`/clip fulltext`";
+    overrides.global === null ? "plugin settings (`taskFullText`)" : "`/clip fulltext`";
   const resolved = mappings.filter((m) => m.issueId);
 
   return {
@@ -1507,7 +1507,7 @@ async function handleFullText(
   taskKey: string | undefined,
   cmdCtx?: CommandContext,
 ): Promise<unknown> {
-  const configDefault = cmdCtx?.fullTaskResponses !== false;
+  const configDefault = cmdCtx?.taskFullText !== false;
   const mappings = cmdCtx?.taskChannels ?? [];
   const requested = (taskKey ?? "").trim();
   const mapping = requested ? findMappedTask(mappings, requested) : null;

@@ -72,3 +72,21 @@ describe("secret-ref config schema (issues #61, #72)", () => {
     }
   });
 });
+
+/** Postgres jsonb key order — length, then bytewise — which is the order the settings form renders. */
+function jsonbKeyOrder(keys: string[]): string[] {
+  return [...keys].sort((a, b) =>
+    a.length !== b.length ? a.length - b.length : Buffer.compare(Buffer.from(a), Buffer.from(b)),
+  );
+}
+
+describe("settings form placement of the full-response switch", () => {
+  it("renders taskFullText directly under taskChannels", () => {
+    const order = jsonbKeyOrder(Object.keys(configSchema.properties));
+    expect(order[order.indexOf("taskChannels") + 1]).toBe("taskFullText");
+  });
+
+  it("no longer offers the pre-rename key as its own field", () => {
+    expect(configSchema.properties).not.toHaveProperty("fullTaskResponses");
+  });
+});

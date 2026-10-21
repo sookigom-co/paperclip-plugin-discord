@@ -49,7 +49,7 @@ export const DEFAULT_CONFIG = {
   companyChannels: {} as Record<string, string>,
   approvalsChannels: {} as Record<string, string>,
   taskChannels: {} as Record<string, string | { channel: string; fullText?: boolean }>,
-  fullTaskResponses: true,
+  taskFullText: true,
   enableTaskThreads: true,
   autoCreateTaskThreads: true,
   taskThreadAutoArchiveMinutes: 10080,

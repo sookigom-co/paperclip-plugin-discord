@@ -36,7 +36,11 @@ import {
   withoutSummaryField,
 } from "./formatters.js";
 import { postFullResponse } from "./full-response.js";
-import { readFullTextOverrides, resolveFullText } from "./full-text-settings.js";
+import {
+  configFullTextDefault,
+  readFullTextOverrides,
+  resolveFullText,
+} from "./full-text-settings.js";
 import {
   buildThreadName,
   createThreadFromMessage,
@@ -176,6 +180,8 @@ type DiscordConfig = {
   /** Task identifier or issue UUID to the existing Discord channel that is that task's conversation window, with optional per-task options. */
   taskChannels?: Record<string, TaskChannelEntry>;
   /** The default for every mapped channel that does not set `fullText` itself. */
+  taskFullText?: boolean;
+  /** The pre-rename name of `taskFullText`, still honoured for configs saved before the rename. */
   fullTaskResponses?: boolean;
 };
 
@@ -1038,7 +1044,7 @@ async function wantsFullResponse(
     overrides,
     issueId: bound.issueId,
     entryFullText: rt.taskChannels.fullTextByIssueId.get(bound.issueId) ?? null,
-    configDefault: rt.config.fullTaskResponses !== false,
+    configDefault: configFullTextDefault(rt.config),
   }).fullText;
 }
 
@@ -1711,10 +1717,16 @@ async function bootstrapRuntime(
   if (!claimOwnership(ctx, companyId, rawConfig)) return runtime;
   const existing = runtime;
 
+  const raw = (rawConfig ?? {}) as Record<string, unknown>;
   const config = {
     ...DEFAULT_CONFIG,
-    ...(rawConfig as Record<string, unknown>),
+    ...raw,
   } as DiscordConfig;
+  // Read before the defaults above can hide a pre-rename config's fullTaskResponses.
+  config.taskFullText = configFullTextDefault({
+    taskFullText: raw.taskFullText as boolean | undefined,
+    fullTaskResponses: raw.fullTaskResponses as boolean | undefined,
+  });
 
   // Required config is reported through health, never thrown: throwing here would
   // kill worker activation on a host that simply has not delivered config yet.
@@ -1830,7 +1842,7 @@ async function bootstrapRuntime(
     pluginCtx: ctx,
     taskThreads: rt.taskThreads,
     taskChannels: rt.taskChannels.mappings,
-    fullTaskResponses: config.fullTaskResponses !== false,
+    taskFullText: configFullTextDefault(config),
   };
   rt.adapter = new DiscordAdapter(ctx, token);
   rt.defaultGuildId = defaultGuildId;

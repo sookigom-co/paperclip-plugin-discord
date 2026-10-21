@@ -125,7 +125,7 @@ const manifest: PaperclipPluginManifestV1 = {
                 channel: { type: "string", description: "Discord channel ID." },
                 fullText: {
                   type: "boolean",
-                  description: "Full responses for this task alone, overriding fullTaskResponses.",
+                  description: "Full responses for this task alone, overriding taskFullText.",
                 },
               },
               required: ["channel"],
@@ -134,12 +134,13 @@ const manifest: PaperclipPluginManifestV1 = {
         },
         default: DEFAULT_CONFIG.taskChannels,
       },
-      fullTaskResponses: {
+      // The settings form lists keys in jsonb order (length, then bytewise), so this name puts the switch under taskChannels.
+      taskFullText: {
         type: "boolean",
         title: "Full task responses (fullText) — master switch for every mapped channel",
         description:
-          "Turn full responses on or off for all taskChannels-mapped channels at once: post the completing comment in full under the card instead of the card's 200-character Summary excerpt. Long responses are split across messages. Task threads and every other channel keep the excerpt. A taskChannels entry with its own fullText ignores this switch, and `/clip fulltext on|off` overrides it from Discord without editing settings.",
-        default: DEFAULT_CONFIG.fullTaskResponses,
+          "Turn full responses on or off for all taskChannels-mapped channels at once: post the completing comment in full under the card instead of the card's 200-character Summary excerpt. Long responses are split across messages. Task threads and every other channel keep the excerpt. A taskChannels entry with its own fullText ignores this switch, and `/clip fulltext on|off` overrides it from Discord without editing settings. Was named fullTaskResponses before; a config still carrying that key keeps working until this one is saved.",
+        default: DEFAULT_CONFIG.taskFullText,
       },
       errorsChannelId: {
         type: "string",
