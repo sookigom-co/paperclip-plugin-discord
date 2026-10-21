@@ -312,7 +312,13 @@ describe("config: resolving taskChannels keys", () => {
     expect(router.byIssueId.get(ROOT_UUID)).toBe(TASK_CHANNEL);
     expect(router.byChannelId.get(TASK_CHANNEL)).toBe(ROOT_UUID);
     expect(router.mappings).toEqual([
-      { configKey: "SOO-61", channelId: TASK_CHANNEL, issueId: ROOT_UUID, issueIdentifier: "SOO-61" },
+      {
+        configKey: "SOO-61",
+        channelId: TASK_CHANNEL,
+        fullText: null,
+        issueId: ROOT_UUID,
+        issueIdentifier: "SOO-61",
+      },
     ]);
   });
 
@@ -397,6 +403,64 @@ describe("config: resolving taskChannels keys", () => {
     await mount(host.ctx, storedConfig({ taskChannels: { "SOO-61": "   " } }));
 
     expect(_getRuntimeForTests()!.taskChannels.byChannelId.size).toBe(0);
+  });
+
+  it("reads the channel and the full-text option out of an object entry", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(
+      host.ctx,
+      storedConfig({ taskChannels: { "SOO-61": { channel: TASK_CHANNEL, fullText: false } } }),
+    );
+
+    const router = _getRuntimeForTests()!.taskChannels;
+    expect(router.byIssueId.get(ROOT_UUID)).toBe(TASK_CHANNEL);
+    expect(router.byChannelId.get(TASK_CHANNEL)).toBe(ROOT_UUID);
+    expect(router.fullTextByIssueId.get(ROOT_UUID)).toBe(false);
+  });
+
+  it("leaves the full-text option unset for an entry that omits it", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, storedConfig({ taskChannels: { "SOO-61": { channel: TASK_CHANNEL } } }));
+
+    expect(_getRuntimeForTests()!.taskChannels.fullTextByIssueId.has(ROOT_UUID)).toBe(false);
+  });
+
+  it("ignores an object entry that names no channel", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, storedConfig({ taskChannels: { "SOO-61": { fullText: true } } }));
+
+    expect(_getRuntimeForTests()!.taskChannels.byChannelId.size).toBe(0);
+  });
+
+  it("warns about an unrecognized option key and keeps the mapping", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(
+      host.ctx,
+      storedConfig({ taskChannels: { "SOO-61": { channel: TASK_CHANNEL, ful_text: true } } }),
+    );
+
+    const router = _getRuntimeForTests()!.taskChannels;
+    expect(router.byIssueId.get(ROOT_UUID)).toBe(TASK_CHANNEL);
+    expect(router.fullTextByIssueId.has(ROOT_UUID)).toBe(false);
+    expect(warnings(host.ctx).some((m) => m.includes("unrecognized options"))).toBe(true);
+  });
+
+  it("warns and follows the global setting when full-text is not a boolean", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(
+      host.ctx,
+      storedConfig({ taskChannels: { "SOO-61": { channel: TASK_CHANNEL, fullText: "nope" } } }),
+    );
+
+    const router = _getRuntimeForTests()!.taskChannels;
+    expect(router.byIssueId.get(ROOT_UUID)).toBe(TASK_CHANNEL);
+    expect(router.fullTextByIssueId.has(ROOT_UUID)).toBe(false);
+    expect(warnings(host.ctx).some((m) => m.includes("non-boolean full-text option"))).toBe(true);
   });
 });
 
@@ -617,6 +681,68 @@ describe("outbound: a task's own window gets the response in full", () => {
 
     const posts = messagePosts(host.discordFetch);
     expect(posts).toHaveLength(1);
+    expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).toContain("Summary");
+  });
+
+  it("turns the response on for one mapping while the global default is off", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(
+      host.ctx,
+      storedConfig({
+        fullTaskResponses: false,
+        taskChannels: { "SOO-61": { channel: TASK_CHANNEL, fullText: true } },
+      }),
+    );
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(2);
+    expect(posts[0]!.channelId).toBe(TASK_CHANNEL);
+    expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).not.toContain("Summary");
+    expect(posts[1]!.body.content).toBe(RESPONSE);
+  });
+
+  it("turns the response off for one mapping while the global default is on", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, storedConfig({ taskChannels: { "SOO-61": { channel: TASK_CHANNEL, full_text: false } } }));
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.channelId).toBe(TASK_CHANNEL);
+    const summary = posts[0]!.body.embeds[0].fields.find((f: any) => f.name === "Summary");
+    expect(summary.value).toBe(RESPONSE.slice(0, 200));
+  });
+
+  it("applies the mapping's own setting to a subtask rolled up into it", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, storedConfig({ taskChannels: { "SOO-61": { channel: TASK_CHANNEL, fullText: false } } }));
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent("child-1"));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body.content).toContain("↳ [**SOO-62**]");
+  });
+
+  it("follows the global default when an entry names a channel but no fullText", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(
+      host.ctx,
+      storedConfig({ fullTaskResponses: false, taskChannels: { "SOO-61": { channel: TASK_CHANNEL } } }),
+    );
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.channelId).toBe(TASK_CHANNEL);
     expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).toContain("Summary");
   });
 
@@ -882,6 +1008,24 @@ describe("/clip status shows the operator what actually bound", () => {
     expect(field.name).toBe("Task Channels (2)");
     expect(field.value).toContain(`**SOO-61** → <#${TASK_CHANNEL}>`);
     expect(field.value).toContain("`SOO-404` → <#ch-ghost> — task not found, entry ignored");
+  });
+
+  it("marks a mapping that sets full responses itself", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(
+      host.ctx,
+      storedConfig({ taskChannels: { "SOO-61": { channel: TASK_CHANNEL, fullText: false } } }),
+    );
+
+    const response: any = await gateway().onInteraction({
+      type: 2,
+      data: { name: "clip", options: [{ name: "status", type: 1 }] },
+      member: { user: { username: "board" } },
+    });
+
+    const field = response.data.embeds[0].fields.find((f: any) => f.name.startsWith("Task Channels"));
+    expect(field.value).toContain(`**SOO-61** → <#${TASK_CHANNEL}> — full responses off`);
   });
 
   it("adds no field when nothing is mapped", async () => {

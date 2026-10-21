@@ -53,6 +53,7 @@ import {
   buildTaskChannelRouter,
   emptyTaskChannelRouter,
   warnOnSharedTaskChannels,
+  type TaskChannelEntry,
   type TaskChannelRouter,
 } from "./task-channels.js";
 import { resolveCompanyIssuePrefix } from "./company-prefix.js";
@@ -171,9 +172,9 @@ type DiscordConfig = {
    * different companies have dedicated approvals channels.
    */
   approvalsChannels?: Record<string, string>;
-  /** Task identifier or issue UUID to the id of an existing Discord channel that is that task's conversation window. */
-  taskChannels?: Record<string, string>;
-  /** Absent on installs configured before full responses existed; defaults on. */
+  /** Task identifier or issue UUID to the existing Discord channel that is that task's conversation window, with optional per-task options. */
+  taskChannels?: Record<string, TaskChannelEntry>;
+  /** The default for every mapped channel that does not set `fullText` itself. */
   fullTaskResponses?: boolean;
 };
 
@@ -1024,6 +1025,11 @@ function completionBody(event: PluginEvent): string | null {
   return body || null;
 }
 
+/** Whether this mapped channel takes the response in full: its own `fullText`, else the global setting. */
+function wantsFullResponse(rt: DiscordRuntime, bound: IssueDestination): boolean {
+  return rt.taskChannels.fullTextByIssueId.get(bound.issueId) ?? rt.config.fullTaskResponses !== false;
+}
+
 async function notify(
   ctx: PluginContext,
   rt: DiscordRuntime,
@@ -1059,8 +1065,7 @@ async function notify(
   let message = compress ? formatSubtaskRollup(event, linkBaseUrl) : fullMessage;
 
   // A channel mapped to one task gets the response itself, so its card drops the excerpt of it.
-  let responseBody =
-    bound?.kind === "channel" && rt.config.fullTaskResponses !== false ? completionBody(event) : null;
+  let responseBody = bound?.kind === "channel" && wantsFullResponse(rt, bound) ? completionBody(event) : null;
   if (responseBody) message = withoutSummaryField(message);
 
   let result = await postEmbedForResult(ctx, rt.token, channelId, message);
