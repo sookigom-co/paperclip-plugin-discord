@@ -115,15 +115,30 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "object",
         title: "Per-task channel bindings",
         description:
-          "Make one existing Discord channel the conversation window for one task. Keys are task identifiers (SOO-61) or issue UUIDs, values are Discord channel IDs. Outranks task threads, topic routing and every channel override; the task's subtask news rolls up there too. Plain messages typed in a mapped channel become comments on its task, so do not reuse a general chat channel.",
-        additionalProperties: { type: "string" },
+          'Make one existing Discord channel the conversation window for one task. Keys are task identifiers (SOO-61) or issue UUIDs. A value is either a Discord channel ID ("1234") or an object that adds per-task options: {"channel": "1234", "fullText": false}. Outranks task threads, topic routing and every channel override; the task\'s subtask news rolls up there too. Plain messages typed in a mapped channel become comments on its task, so do not reuse a general chat channel.',
+        additionalProperties: {
+          anyOf: [
+            { type: "string" },
+            {
+              type: "object",
+              properties: {
+                channel: { type: "string", description: "Discord channel ID." },
+                fullText: {
+                  type: "boolean",
+                  description: "Full responses for this task alone, overriding fullTaskResponses.",
+                },
+              },
+              required: ["channel"],
+            },
+          ],
+        },
         default: DEFAULT_CONFIG.taskChannels,
       },
       fullTaskResponses: {
         type: "boolean",
         title: "Full responses in a taskChannels-mapped channel",
         description:
-          "In a channel mapped under taskChannels, post the completing comment in full under the card instead of the card's 200-character Summary excerpt. Long responses are split across messages. Task threads and every other channel keep the excerpt. Switch off to keep the excerpt everywhere.",
+          "The default for every mapped channel: post the completing comment in full under the card instead of the card's 200-character Summary excerpt. Long responses are split across messages. Task threads and every other channel keep the excerpt. A taskChannels entry with its own fullText ignores this default.",
         default: DEFAULT_CONFIG.fullTaskResponses,
       },
       errorsChannelId: {

@@ -132,7 +132,7 @@ created, moved or deleted — the plugin only routes — so the bot needs no `MA
 {
   "taskChannels": {
     "SOO-61": "123456789012345678",
-    "4f1c2a90-...": "987654321098765432"
+    "4f1c2a90-...": { "channel": "987654321098765432", "fullText": false }
   }
 }
 ```
@@ -140,12 +140,18 @@ created, moved or deleted — the plugin only routes — so the bot needs no `MA
 The Paperclip settings UI edits one field at a time, so the **Per-task channel bindings** box
 takes the inner map alone — `{"SOO-61": "123456789012345678"}`. Pasting the wrapper above into
 that box nests the key under itself and the save is rejected with `400`, because the schema
-requires every value to be a channel ID string.
+requires every value to be a channel ID or an entry object.
 
 - **Keys** are task identifiers (`SOO-61`, case-insensitive) or issue UUIDs. A key that names
   no task in this company is warned about once at startup and otherwise ignored; the other
   keys keep working.
-- **Values** are Discord channel IDs of channels that already exist.
+- **Values** are either the Discord channel ID of a channel that already exists, or an object
+  `{"channel": "<id>", "fullText": true|false}` that adds per-task options. The two forms can
+  be mixed in one map; `{"channel": "<id>"}` alone behaves exactly like the bare ID.
+- The only option today is **`fullText`** — see
+  [Full responses](#full-responses-in-a-taskchannels-mapped-channel). An unrecognized key
+  inside an entry is warned about at startup and ignored, so a misspelling such as `ful_text`
+  leaves the task on the global default rather than silently changing it.
 - Independent of `enableTaskThreads`: a non-empty map routes even with threads switched off.
 - The mapped task's own cards arrive whole; its subtasks roll up as one
   `↳ SOO-62 Title — Done` line, and an approval request is never compressed.
@@ -180,8 +186,24 @@ nothing extra is posted.
   task.
 - When the card falls back to the ordinary channel chain, the excerpt comes back with it and
   the full text is not posted to the fallback channel.
-- Switch off with `fullTaskResponses: false` (default: true) to keep the excerpt everywhere.
-  The settings UI shows it as a toggle, "Full responses in a taskChannels-mapped channel".
+- `fullTaskResponses` (default: true) is the **default for every mapped channel**. Switch it
+  off to keep the excerpt everywhere. The settings UI shows it as a toggle, "Full responses in
+  a taskChannels-mapped channel".
+- **Per task**, an entry's own `fullText` overrides that default in both directions:
+
+  ```json
+  {
+    "SOO-61": { "channel": "123456789012345678", "fullText": true },
+    "SOO-70": { "channel": "987654321098765432", "fullText": false },
+    "SOO-80": "111111111111111111"
+  }
+  ```
+
+  With `fullTaskResponses: false`, SOO-61 still gets full responses while SOO-70 and SOO-80
+  keep the excerpt. With `fullTaskResponses: true` it is the other way round: only SOO-70
+  keeps the excerpt. An entry with no `fullText` follows the global setting.
+- A subtask rolled up into a mapped channel follows **that channel's** setting, since the
+  mapped ancestor owns the window.
 
 #### Destination priority
 
@@ -310,8 +332,8 @@ Before filing a bug, confirm which Paperclip host this plugin is actually talkin
 | `enableTaskThreads` | No | Treat a Discord thread as one task's conversation window (default: true) |
 | `autoCreateTaskThreads` | No | Open a thread for every new root task (default: true) |
 | `taskThreadAutoArchiveMinutes` | No | Idle time before Discord archives a task thread: 60, 1440, 4320, or 10080 (default: 10080) |
-| `taskChannels` | No | Map one task to one existing channel: keys are task identifiers (`SOO-61`) or issue UUIDs, values are Discord channel IDs. Outranks every other route; plain messages there become comments on the task (default: `{}`) |
-| `fullTaskResponses` | No | In a `taskChannels`-mapped channel only, post the completing comment in full instead of the card's `Summary` excerpt; task threads keep the excerpt (default: true) |
+| `taskChannels` | No | Map one task to one existing channel: keys are task identifiers (`SOO-61`) or issue UUIDs, values are a Discord channel ID or `{"channel": "<id>", "fullText": true\|false}`. Outranks every other route; plain messages there become comments on the task (default: `{}`) |
+| `fullTaskResponses` | No | Default for every `taskChannels`-mapped channel: post the completing comment in full instead of the card's `Summary` excerpt; task threads keep the excerpt. An entry's own `fullText` overrides it (default: true) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for daily digest, HH:MM (default: 09:00) |
 | `bidailySecondTime` | No | Second digest time for bidaily mode (default: 17:00) |

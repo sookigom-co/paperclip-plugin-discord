@@ -564,8 +564,10 @@ async function handleAutocomplete(
 /** One `taskChannels` entry as `/clip status` shows it, resolved or not. */
 function formatTaskChannelMapping(mapping: TaskChannelMapping): string {
   const label = mapping.issueIdentifier ?? mapping.configKey;
+  const fullText =
+    mapping.fullText === null ? "" : mapping.fullText ? " — full responses on" : " — full responses off";
   return mapping.issueId
-    ? `- **${label}** → <#${mapping.channelId}>`
+    ? `- **${label}** → <#${mapping.channelId}>${fullText}`
     : `- \`${mapping.configKey}\` → <#${mapping.channelId}> — task not found, entry ignored`;
 }
 

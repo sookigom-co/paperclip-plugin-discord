@@ -48,7 +48,7 @@ export const DEFAULT_CONFIG = {
   tridailyTimes: "07:00,13:00,19:00",
   companyChannels: {} as Record<string, string>,
   approvalsChannels: {} as Record<string, string>,
-  taskChannels: {} as Record<string, string>,
+  taskChannels: {} as Record<string, string | { channel: string; fullText?: boolean }>,
   fullTaskResponses: true,
   enableTaskThreads: true,
   autoCreateTaskThreads: true,
