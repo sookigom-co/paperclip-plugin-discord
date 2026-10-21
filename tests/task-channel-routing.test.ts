@@ -675,6 +675,18 @@ describe("outbound: a task's own window gets the response in full", () => {
   it("keeps the excerpt when the operator switches full responses off", async () => {
     const host = buildHost();
     seedIssues();
+    await mount(host.ctx, mappedConfig({ taskFullText: false }));
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).toContain("Summary");
+  });
+
+  it("keeps the excerpt for a config still carrying the pre-rename fullTaskResponses key", async () => {
+    const host = buildHost();
+    seedIssues();
     await mount(host.ctx, mappedConfig({ fullTaskResponses: false }));
 
     await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
@@ -684,13 +696,25 @@ describe("outbound: a task's own window gets the response in full", () => {
     expect(posts[0]!.body.embeds[0].fields.map((f: any) => f.name)).toContain("Summary");
   });
 
+  it("lets taskFullText win over the pre-rename key when a config carries both", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, mappedConfig({ taskFullText: true, fullTaskResponses: false }));
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.body.content).toBe(RESPONSE);
+  });
+
   it("turns the response on for one mapping while the global default is off", async () => {
     const host = buildHost();
     seedIssues();
     await mount(
       host.ctx,
       storedConfig({
-        fullTaskResponses: false,
+        taskFullText: false,
         taskChannels: { "SOO-61": { channel: TASK_CHANNEL, fullText: true } },
       }),
     );
@@ -735,7 +759,7 @@ describe("outbound: a task's own window gets the response in full", () => {
     seedIssues();
     await mount(
       host.ctx,
-      storedConfig({ fullTaskResponses: false, taskChannels: { "SOO-61": { channel: TASK_CHANNEL } } }),
+      storedConfig({ taskFullText: false, taskChannels: { "SOO-61": { channel: TASK_CHANNEL } } }),
     );
 
     await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
@@ -812,7 +836,7 @@ describe("/clip fulltext switches full responses without touching settings", () 
   it("turns every mapped channel on while the plugin setting is off", async () => {
     const host = buildHost();
     seedIssues();
-    await mount(host.ctx, mappedConfig({ fullTaskResponses: false }));
+    await mount(host.ctx, mappedConfig({ taskFullText: false }));
 
     await fulltext("on");
     await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));

@@ -2,13 +2,21 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 /** The full-response switches `/clip fulltext` stores, layered over plugin config. */
 export interface FullTextOverrides {
-  /** The default for every mapped channel, or null to follow `fullTaskResponses`. */
+  /** The default for every mapped channel, or null to follow `taskFullText`. */
   global: boolean | null;
   /** Per-task switches, which outrank both defaults. */
   byIssueId: Record<string, boolean>;
 }
 
 const STATE_KEY = "full_text_overrides";
+
+/** The configured default for mapped channels; `fullTaskResponses` is the pre-rename key for `taskFullText`. */
+export function configFullTextDefault(config: {
+  taskFullText?: boolean;
+  fullTaskResponses?: boolean;
+}): boolean {
+  return (config.taskFullText ?? config.fullTaskResponses) !== false;
+}
 
 export function emptyFullTextOverrides(): FullTextOverrides {
   return { global: null, byIssueId: {} };
