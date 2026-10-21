@@ -53,6 +53,7 @@ This is that plugin.
 - `/clip connect [company]` - Link a Discord channel to a Paperclip company
 - `/clip connect-channel <project>` - Map a Discord channel to a project for notification routing
 - `/clip digest <on|off|status> [mode]` - Configure daily digest (daily/bidaily/tridaily)
+- `/clip fulltext <on|off|reset|status> [task]` - Full task responses in mapped channels, for all of them or for one task
 - `/clip commands import <json>` - Import a workflow command from JSON
 - `/clip commands list` - List registered workflow commands
 - `/clip commands run <name> [args]` - Execute a workflow command
@@ -186,9 +187,9 @@ nothing extra is posted.
   task.
 - When the card falls back to the ordinary channel chain, the excerpt comes back with it and
   the full text is not posted to the fallback channel.
-- `fullTaskResponses` (default: true) is the **default for every mapped channel**. Switch it
-  off to keep the excerpt everywhere. The settings UI shows it as a toggle, "Full responses in
-  a taskChannels-mapped channel".
+- `fullTaskResponses` (default: true) is the **master switch**, the default for every mapped
+  channel. Switch it off to keep the excerpt everywhere. The settings UI shows it as a toggle,
+  "Full task responses (fullText) — master switch for every mapped channel".
 - **Per task**, an entry's own `fullText` overrides that default in both directions:
 
   ```json
@@ -204,6 +205,23 @@ nothing extra is posted.
   keeps the excerpt. An entry with no `fullText` follows the global setting.
 - A subtask rolled up into a mapped channel follows **that channel's** setting, since the
   mapped ancestor owns the window.
+- **From Discord**, `/clip fulltext` does the same without opening the settings UI:
+
+  | Command | Effect |
+  | --- | --- |
+  | `/clip fulltext status` | The effective default, where it came from, and every mapped channel's state |
+  | `/clip fulltext on` / `off` | Flips the default for every mapped channel |
+  | `/clip fulltext on task:SOO-61` | Flips one mapped task, outranking its `fullText` entry |
+  | `/clip fulltext reset` | Hands the default back to `fullTaskResponses` |
+  | `/clip fulltext reset task:SOO-61` | Hands that task back to its `taskChannels` entry |
+
+  The switches are stored per company in plugin state and survive restarts; they are read on
+  each completion, so a flip applies to the very next notification. Order of precedence, first
+  match winning: the task's `/clip fulltext` switch > the task's `fullText` entry > the
+  `/clip fulltext` default > `fullTaskResponses`. A task with no mapped channel is refused,
+  since full responses only reach mapped channels.
+- `/clip status` shows the same thing in its Task Channels field, with the effective default
+  in the field title.
 
 #### Destination priority
 
@@ -333,7 +351,7 @@ Before filing a bug, confirm which Paperclip host this plugin is actually talkin
 | `autoCreateTaskThreads` | No | Open a thread for every new root task (default: true) |
 | `taskThreadAutoArchiveMinutes` | No | Idle time before Discord archives a task thread: 60, 1440, 4320, or 10080 (default: 10080) |
 | `taskChannels` | No | Map one task to one existing channel: keys are task identifiers (`SOO-61`) or issue UUIDs, values are a Discord channel ID or `{"channel": "<id>", "fullText": true\|false}`. Outranks every other route; plain messages there become comments on the task (default: `{}`) |
-| `fullTaskResponses` | No | Default for every `taskChannels`-mapped channel: post the completing comment in full instead of the card's `Summary` excerpt; task threads keep the excerpt. An entry's own `fullText` overrides it (default: true) |
+| `fullTaskResponses` | No | Master switch for every `taskChannels`-mapped channel: post the completing comment in full instead of the card's `Summary` excerpt; task threads keep the excerpt. An entry's own `fullText` and `/clip fulltext` override it (default: true) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for daily digest, HH:MM (default: 09:00) |
 | `bidailySecondTime` | No | Second digest time for bidaily mode (default: 17:00) |

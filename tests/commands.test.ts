@@ -1076,7 +1076,7 @@ describe("SLASH_COMMANDS", () => {
     const clip = SLASH_COMMANDS[0]!;
     expect(clip.name).toBe("clip");
     const subNames = clip.options.map((o) => o.name);
-    expect(subNames).toEqual(["status", "approve", "budget", "issues", "agents", "companies", "projects", "help", "connect", "connect-channel", "digest", "commands"]);
+    expect(subNames).toEqual(["status", "approve", "budget", "issues", "agents", "companies", "projects", "help", "connect", "connect-channel", "digest", "fulltext", "commands"]);
 
     const acp = SLASH_COMMANDS[1]!;
     expect(acp.name).toBe("acp");

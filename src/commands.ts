@@ -15,6 +15,15 @@ import {
 } from "./task-threads.js";
 import { findTaskByIdentifier } from "./task-lookup.js";
 import type { TaskChannelMapping } from "./task-channels.js";
+import {
+  readFullTextOverrides,
+  resolveDefaultFullText,
+  resolveFullText,
+  setGlobalFullText,
+  setTaskFullText,
+  type FullTextDecision,
+  type FullTextOverrides,
+} from "./full-text-settings.js";
 import { withRetry, throwOnRetryableStatus } from "./retry.js";
 import { paperclipFetch } from "./paperclip-fetch.js";
 import { handleHandoffButton, handleDiscussionButton, handleAcpCommand } from "./session-registry.js";
@@ -72,6 +81,8 @@ export interface CommandContext {
   };
   /** `taskChannels` as the runtime resolved it, for `/clip status` to show. */
   taskChannels?: TaskChannelMapping[];
+  /** The configured `fullTaskResponses` default, which `/clip fulltext` reports and overrides. */
+  fullTaskResponses?: boolean;
 }
 
 function getOption(
@@ -223,6 +234,31 @@ export const SLASH_COMMANDS = [
               { name: "bidaily", value: "bidaily" },
               { name: "tridaily", value: "tridaily" },
             ],
+          },
+        ],
+      },
+      {
+        name: "fulltext",
+        description: "Turn full task responses on or off in taskChannels-mapped channels",
+        type: 1,
+        options: [
+          {
+            name: "action",
+            description: "on, off, reset (follow plugin settings), or status",
+            type: 3,
+            required: false,
+            choices: [
+              { name: "on", value: "on" },
+              { name: "off", value: "off" },
+              { name: "reset", value: "reset" },
+              { name: "status", value: "status" },
+            ],
+          },
+          {
+            name: "task",
+            description: "One mapped task (SOO-147). Omit to change the default for every mapped channel.",
+            type: 3,
+            required: false,
           },
         ],
       },
@@ -489,6 +525,14 @@ async function handleSlashCommand(
         getOption(subcommand.options ?? [], "action") ?? "status",
         getOption(subcommand.options ?? [], "mode"),
       );
+    case "fulltext":
+      return handleFullText(
+        ctx,
+        companyId,
+        getOption(subcommand.options ?? [], "action") ?? "status",
+        getOption(subcommand.options ?? [], "task"),
+        cmdCtx,
+      );
     case "commands":
       return handleCommands(ctx, subcommand, cmdCtx);
     default:
@@ -562,13 +606,41 @@ async function handleAutocomplete(
 }
 
 /** One `taskChannels` entry as `/clip status` shows it, resolved or not. */
-function formatTaskChannelMapping(mapping: TaskChannelMapping): string {
+function formatTaskChannelMapping(mapping: TaskChannelMapping, decision?: FullTextDecision): string {
   const label = mapping.issueIdentifier ?? mapping.configKey;
-  const fullText =
-    mapping.fullText === null ? "" : mapping.fullText ? " — full responses on" : " — full responses off";
+  const own = decision && (decision.source === "task-switch" || decision.source === "task-entry");
+  const fullText = !decision
+    ? ""
+    : own
+      ? ` — full responses ${decision.fullText ? "on" : "off"}`
+      : ` — full responses ${decision.fullText ? "on" : "off"} (default)`;
   return mapping.issueId
     ? `- **${label}** → <#${mapping.channelId}>${fullText}`
     : `- \`${mapping.configKey}\` → <#${mapping.channelId}> — task not found, entry ignored`;
+}
+
+/** Every mapping's effective full-response setting, keyed the way the mapping list is ordered. */
+async function decideFullTextForMappings(
+  ctx: PluginContext,
+  companyId: string,
+  mappings: TaskChannelMapping[],
+  configDefault: boolean,
+): Promise<{ overrides: FullTextOverrides; decisions: Map<TaskChannelMapping, FullTextDecision> }> {
+  const overrides = await readFullTextOverrides(ctx, companyId);
+  const decisions = new Map<TaskChannelMapping, FullTextDecision>();
+  for (const mapping of mappings) {
+    if (!mapping.issueId) continue;
+    decisions.set(
+      mapping,
+      resolveFullText({
+        overrides,
+        issueId: mapping.issueId,
+        entryFullText: mapping.fullText,
+        configDefault,
+      }),
+    );
+  }
+  return { overrides, decisions };
 }
 
 async function handleStatus(
@@ -614,9 +686,17 @@ async function handleStatus(
       { name: `Recent Completions (${doneIssues.length})`, value: doneList },
     ];
     if (taskChannels.length > 0) {
+      const configDefault = cmdCtx?.fullTaskResponses !== false;
+      const { overrides, decisions } = await decideFullTextForMappings(
+        ctx,
+        companyId,
+        taskChannels,
+        configDefault,
+      );
+      const defaultLabel = resolveDefaultFullText(overrides, configDefault) ? "on" : "off";
       fields.push({
-        name: `Task Channels (${taskChannels.length})`,
-        value: taskChannels.map(formatTaskChannelMapping).join("\n"),
+        name: `Task Channels (${taskChannels.length}) — full responses default: ${defaultLabel}`,
+        value: taskChannels.map((m) => formatTaskChannelMapping(m, decisions.get(m))).join("\n"),
       });
     }
 
@@ -1013,6 +1093,7 @@ function handleHelp(): unknown {
     "`/clip connect [company]` — Link channel to a company",
     "`/clip connect-channel <project>` — Map channel to a project",
     "`/clip digest <on|off|status> [mode]` — Configure daily digest",
+    "`/clip fulltext <on|off|reset|status> [task]` — Full task responses in mapped channels",
     "`/clip commands import [json]` — Import a workflow command",
     "`/clip commands list` — List workflow commands",
     "`/clip commands run <name> [args]` — Run a workflow command",
@@ -1347,6 +1428,138 @@ async function handleTaskUnbind(
       ephemeral: true,
     });
   }
+}
+
+/** The mapping a `/clip fulltext task:` argument names, by identifier, config key or issue id. */
+function findMappedTask(mappings: TaskChannelMapping[], requested: string): TaskChannelMapping | null {
+  const wanted = requested.toLowerCase();
+  return (
+    mappings.find(
+      (m) =>
+        m.configKey.toLowerCase() === wanted ||
+        (m.issueIdentifier ?? "").toLowerCase() === wanted ||
+        (m.issueId ?? "").toLowerCase() === wanted,
+    ) ?? null
+  );
+}
+
+function fullTextActionValue(action: string): boolean | null | undefined {
+  switch (action) {
+    case "on":
+      return true;
+    case "off":
+      return false;
+    case "reset":
+      return null;
+    default:
+      return undefined;
+  }
+}
+
+/** The embed `/clip fulltext` answers with: the effective default and every mapped channel. */
+async function fullTextStatusEmbed(
+  ctx: PluginContext,
+  companyId: string,
+  mappings: TaskChannelMapping[],
+  configDefault: boolean,
+  applied: string | null,
+): Promise<DiscordEmbed> {
+  const { overrides, decisions } = await decideFullTextForMappings(
+    ctx,
+    companyId,
+    mappings,
+    configDefault,
+  );
+  const defaultOn = resolveDefaultFullText(overrides, configDefault);
+  const defaultSource =
+    overrides.global === null ? "plugin settings (`fullTaskResponses`)" : "`/clip fulltext`";
+  const resolved = mappings.filter((m) => m.issueId);
+
+  return {
+    title: "Full Task Responses",
+    description:
+      applied ??
+      "A taskChannels-mapped channel posts the completing comment in full. Task threads and every other channel keep the card's 200-character excerpt.",
+    fields: [
+      {
+        name: "Default for every mapped channel",
+        value: `${defaultOn ? "On" : "Off"} — from ${defaultSource}`,
+      },
+      {
+        name: `Mapped channels (${resolved.length})`,
+        value:
+          resolved.length > 0
+            ? resolved.map((m) => formatTaskChannelMapping(m, decisions.get(m))).join("\n")
+            : "No taskChannels mapping yet, so nothing posts in full.",
+      },
+    ],
+    color: COLORS.BLUE,
+    footer: { text: "Paperclip" },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/** `/clip fulltext` — switch full responses on or off, for every mapped channel or for one task. */
+async function handleFullText(
+  ctx: PluginContext,
+  companyId: string,
+  action: string,
+  taskKey: string | undefined,
+  cmdCtx?: CommandContext,
+): Promise<unknown> {
+  const configDefault = cmdCtx?.fullTaskResponses !== false;
+  const mappings = cmdCtx?.taskChannels ?? [];
+  const requested = (taskKey ?? "").trim();
+  const mapping = requested ? findMappedTask(mappings, requested) : null;
+
+  if (requested && (!mapping || !mapping.issueId)) {
+    return respondToInteraction({
+      type: 4,
+      content: `**${requested}** has no \`taskChannels\` mapping, and full responses only reach a mapped channel. Map it in the plugin settings first, then run this again.`,
+      ephemeral: true,
+    });
+  }
+
+  const normalized = action.trim().toLowerCase();
+  let applied: string | null = null;
+
+  if (normalized !== "status") {
+    const value = fullTextActionValue(normalized);
+    if (value === undefined) {
+      return respondToInteraction({
+        type: 4,
+        content: "Unknown action. Use `on`, `off`, `reset` (follow plugin settings), or `status`.",
+        ephemeral: true,
+      });
+    }
+
+    const target = mapping?.issueIdentifier ?? mapping?.configKey ?? null;
+    if (mapping?.issueId) {
+      await setTaskFullText(ctx, companyId, mapping.issueId, value);
+      applied =
+        value === null
+          ? `**${target}** follows its \`taskChannels\` entry again.`
+          : `Full responses are now **${value ? "on" : "off"}** for **${target}** alone.`;
+    } else {
+      await setGlobalFullText(ctx, companyId, value);
+      applied =
+        value === null
+          ? "The default follows the plugin settings again."
+          : `Full responses are now **${value ? "on" : "off"}** for every mapped channel that sets nothing of its own.`;
+    }
+
+    ctx.logger.info("Full task responses switched from Discord", {
+      companyId,
+      issueId: mapping?.issueId ?? null,
+      value,
+    });
+  }
+
+  return respondToInteraction({
+    type: 4,
+    embeds: [await fullTextStatusEmbed(ctx, companyId, mappings, configDefault, applied)],
+    ephemeral: true,
+  });
 }
 
 async function handleDigest(

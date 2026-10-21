@@ -771,6 +771,125 @@ describe("outbound: a task's own window gets the response in full", () => {
   });
 });
 
+describe("/clip fulltext switches full responses without touching settings", () => {
+  const RESPONSE = `${"결론부터 말하면 됩니다. ".repeat(20)}\n\n마지막 줄입니다.`;
+
+  function doneEvent(entityId: string) {
+    issueFixtures[entityId].status = "done";
+    issueFixtures[entityId].completedAt = "2026-10-20T00:00:00.000Z";
+    return issueEvent("issue.updated", entityId, { status: "done", lastComment: RESPONSE });
+  }
+
+  async function fulltext(action?: string, task?: string): Promise<any> {
+    const options = [
+      ...(action ? [{ name: "action", value: action }] : []),
+      ...(task ? [{ name: "task", value: task }] : []),
+    ];
+    return gateway().onInteraction({
+      type: 2,
+      data: { name: "clip", options: [{ name: "fulltext", type: 1, options }] },
+      member: { user: { username: "board" } },
+    });
+  }
+
+  function summaryOf(post: any) {
+    return post.body.embeds[0].fields.find((f: any) => f.name === "Summary");
+  }
+
+  it("turns every mapped channel off while the plugin setting stays on", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+
+    await fulltext("off");
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(summaryOf(posts[0]!).value).toBe(RESPONSE.slice(0, 200));
+  });
+
+  it("turns every mapped channel on while the plugin setting is off", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, mappedConfig({ fullTaskResponses: false }));
+
+    await fulltext("on");
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.body.content).toBe(RESPONSE);
+  });
+
+  it("gives back the plugin setting on reset", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+
+    await fulltext("off");
+    await fulltext("reset");
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    expect(messagePosts(host.discordFetch)).toHaveLength(2);
+  });
+
+  it("switches one task against its own taskChannels entry", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, storedConfig({ taskChannels: { "SOO-61": { channel: TASK_CHANNEL, fullText: true } } }));
+
+    await fulltext("off", "SOO-61");
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    const posts = messagePosts(host.discordFetch);
+    expect(posts).toHaveLength(1);
+    expect(summaryOf(posts[0]!).value).toBe(RESPONSE.slice(0, 200));
+  });
+
+  it("leaves other mapped tasks alone when one task is switched", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx, storedConfig({ taskChannels: { "SOO-61": TASK_CHANNEL, "SOO-62": "ch-soo-62" } }));
+
+    await fulltext("off", "SOO-62");
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+
+    expect(messagePosts(host.discordFetch)).toHaveLength(2);
+  });
+
+  it("reports the default and where it came from", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+
+    const fromSettings: any = await fulltext("status");
+    const settingsField = fromSettings.data.embeds[0].fields[0];
+    expect(settingsField.value).toContain("On");
+    expect(settingsField.value).toContain("plugin settings");
+
+    const afterSwitch: any = await fulltext("off");
+    const switchedField = afterSwitch.data.embeds[0].fields[0];
+    expect(switchedField.value).toContain("Off");
+    expect(switchedField.value).toContain("/clip fulltext");
+    expect(afterSwitch.data.embeds[0].fields[1].value).toContain(`**SOO-61** → <#${TASK_CHANNEL}>`);
+  });
+
+  it("refuses a task that has no mapped channel", async () => {
+    const host = buildHost();
+    seedIssues();
+    await mount(host.ctx);
+
+    const response: any = await fulltext("off", "SOO-999");
+
+    expect(response.data.content).toContain("SOO-999");
+    expect(response.data.content).toContain("taskChannels");
+
+    await emit(host.eventHandlers, "issue.updated", doneEvent(ROOT_UUID));
+    expect(messagePosts(host.discordFetch)).toHaveLength(2);
+  });
+});
+
 describe("outbound: the nearest ancestor owns the destination", () => {
   it("lets a descendant's own thread win over a mapped grandparent", async () => {
     const host = buildHost();
@@ -1005,7 +1124,7 @@ describe("/clip status shows the operator what actually bound", () => {
     });
 
     const field = response.data.embeds[0].fields.find((f: any) => f.name.startsWith("Task Channels"));
-    expect(field.name).toBe("Task Channels (2)");
+    expect(field.name).toBe("Task Channels (2) — full responses default: on");
     expect(field.value).toContain(`**SOO-61** → <#${TASK_CHANNEL}>`);
     expect(field.value).toContain("`SOO-404` → <#ch-ghost> — task not found, entry ignored");
   });
